@@ -6,9 +6,6 @@ namespace EmployeeManagement.Services;
 
 public class UserRoleService : IUserRoleService
 {
-    private const string Admin = "Admin";
-    private const string Manager = "Manager";
-    private const string Employee = "Employee";
     private readonly AppDbContext _context;
 
     public UserRoleService(AppDbContext context)
@@ -19,7 +16,7 @@ public class UserRoleService : IUserRoleService
     public async Task<string> GetRoleForEmployeeAsync(string employeeId, string username)
     {
         if (IsAdminUsername(username))
-            return Admin;
+            return RoleNames.Admin;
 
         var accountId = await _context.Employees
             .AsNoTracking()
@@ -30,7 +27,7 @@ public class UserRoleService : IUserRoleService
         if (!string.IsNullOrWhiteSpace(accountId))
         {
             var accountRole = await ReadAccountRoleAsync(accountId);
-            if (accountRole != null)
+            if (accountRole == RoleNames.Admin || accountRole == RoleNames.Manager)
                 return accountRole;
         }
 
@@ -38,16 +35,16 @@ public class UserRoleService : IUserRoleService
             .AsNoTracking()
             .AnyAsync(pm => pm.EmployeeId == employeeId);
 
-        return isManager ? Manager : Employee;
+        return isManager ? RoleNames.Manager : RoleNames.Employee;
     }
 
     public async Task<string> GetRoleForAccountAsync(string accountId, string username)
     {
         if (IsAdminUsername(username))
-            return Admin;
+            return RoleNames.Admin;
 
         var accountRole = await ReadAccountRoleAsync(accountId);
-        if (accountRole != null)
+        if (accountRole == RoleNames.Admin || accountRole == RoleNames.Manager)
             return accountRole;
 
         var employeeId = await _context.Employees
@@ -57,13 +54,50 @@ public class UserRoleService : IUserRoleService
             .FirstOrDefaultAsync();
 
         if (string.IsNullOrWhiteSpace(employeeId))
-            return Employee;
+            return RoleNames.Employee;
 
         var isManager = await _context.ProjectManagers
             .AsNoTracking()
             .AnyAsync(pm => pm.EmployeeId == employeeId);
 
-        return isManager ? Manager : Employee;
+        return isManager ? RoleNames.Manager : RoleNames.Employee;
+    }
+
+    public IReadOnlyList<string> GetPermissions(string role) => RoleNames.GetPermissions(role);
+
+    public async Task<UserAccessDto?> GetAccessForEmployeeAsync(string employeeId)
+    {
+        var employee = await _context.Employees
+            .AsNoTracking()
+            .Include(e => e.Account)
+            .FirstOrDefaultAsync(e => e.EmployeeId == employeeId);
+
+        if (employee?.Account == null)
+            return null;
+
+        var role = await GetRoleForEmployeeAsync(employee.EmployeeId, employee.Account.Username);
+        var managedProjectIds = await _context.ProjectManagers
+            .AsNoTracking()
+            .Where(pm => pm.EmployeeId == employee.EmployeeId)
+            .Select(pm => pm.ProjectId)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToListAsync();
+
+        var permissions = GetPermissions(role);
+        return new UserAccessDto
+        {
+            AccountId = employee.AccountId,
+            Username = employee.Account.Username,
+            EmployeeId = employee.EmployeeId,
+            FullName = $"{employee.FirstName} {employee.LastName}",
+            Role = role,
+            Permissions = permissions,
+            ManagedProjectIds = managedProjectIds,
+            CanViewAllCompanyData = role == RoleNames.Admin,
+            CanManageRoles = role == RoleNames.Admin,
+            CanViewAvailability = role == RoleNames.Admin || role == RoleNames.Manager
+        };
     }
 
     public async Task<List<EmployeeRoleDto>> GetEmployeeRolesAsync()
@@ -95,19 +129,12 @@ public class UserRoleService : IUserRoleService
     {
         try
         {
-            var connection = _context.Database.GetDbConnection();
-            await using var command = connection.CreateCommand();
-            command.CommandText = "SELECT Role FROM Account WHERE AccountId = @accountId";
-            var parameter = command.CreateParameter();
-            parameter.ParameterName = "@accountId";
-            parameter.Value = accountId;
-            command.Parameters.Add(parameter);
-
-            if (connection.State != System.Data.ConnectionState.Open)
-                await connection.OpenAsync();
-
-            var value = (await command.ExecuteScalarAsync())?.ToString();
-            return NormalizeRole(value);
+            var role = await _context.Accounts
+                .AsNoTracking()
+                .Where(a => a.AccountId == accountId)
+                .Select(a => a.Role)
+                .FirstOrDefaultAsync();
+            return string.IsNullOrWhiteSpace(role) ? null : RoleNames.Normalize(role);
         }
         catch
         {
@@ -116,13 +143,5 @@ public class UserRoleService : IUserRoleService
     }
 
     private static bool IsAdminUsername(string username) =>
-        string.Equals(username, Admin, StringComparison.OrdinalIgnoreCase);
-
-    private static string? NormalizeRole(string? role) => role?.Trim().ToLowerInvariant() switch
-    {
-        "admin" => Admin,
-        "manager" => Manager,
-        "employee" => Employee,
-        _ => null
-    };
+        string.Equals(username, RoleNames.Admin, StringComparison.OrdinalIgnoreCase);
 }

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using EmployeeManagement.Data;
 using EmployeeManagement.Entities;
 using EmployeeManagement.DTOs;
+using EmployeeManagement.Services;
 
 namespace EmployeeManagement.Controllers
 {
@@ -11,10 +12,12 @@ namespace EmployeeManagement.Controllers
     public class TasksController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly IUserRoleService _userRoleService;
 
-        public TasksController(AppDbContext context)
+        public TasksController(AppDbContext context, IUserRoleService userRoleService)
         {
             _context = context;
+            _userRoleService = userRoleService;
         }
 
         [HttpGet]
@@ -37,6 +40,39 @@ namespace EmployeeManagement.Controllers
             }).ToList();
 
             return Ok(dtos);
+        }
+
+        [HttpGet("visible-to/{viewerEmployeeId}")]
+        public async Task<ActionResult<IEnumerable<TaskItemDto>>> GetVisibleTo(string viewerEmployeeId)
+        {
+            var access = await _userRoleService.GetAccessForEmployeeAsync(viewerEmployeeId);
+            if (access == null)
+                return NotFound("Viewer employee was not found.");
+
+            IQueryable<TaskItem> query = _context.TaskItems
+                .AsNoTracking()
+                .Include(t => t.Project)
+                .Include(t => t.Description);
+
+            if (access.Role == RoleNames.Employee)
+            {
+                query = query.Where(t => _context.Allocations.Any(a =>
+                    a.ProjectId == t.ProjectId &&
+                    a.TaskId == t.TaskId &&
+                    a.EmployeeId == viewerEmployeeId));
+            }
+            else if (access.Role == RoleNames.Manager)
+            {
+                var managedProjectIds = access.ManagedProjectIds;
+                query = query.Where(t => managedProjectIds.Contains(t.ProjectId));
+            }
+
+            var tasks = await query
+                .OrderBy(t => t.ProjectId)
+                .ThenBy(t => t.TaskName)
+                .ToListAsync();
+
+            return Ok(tasks.Select(ToDto).ToList());
         }
 
         [HttpGet("{projectId}/{taskId}")]
@@ -157,5 +193,24 @@ namespace EmployeeManagement.Controllers
 
             return NoContent();
         }
+
+        private static TaskItemDto ToDto(TaskItem task) => new()
+        {
+            ProjectId = task.ProjectId,
+            TaskId = task.TaskId,
+            TaskName = task.TaskName,
+            EstimatedHours = task.EstimatedHours,
+            DescriptionId = task.DescriptionId,
+            Project = task.Project != null ? new ProjectDto
+            {
+                ProjectId = task.Project.ProjectId,
+                ProjectName = task.Project.ProjectName
+            } : null,
+            Description = task.Description != null ? new TaskDescriptionDto
+            {
+                DescriptionId = task.Description.DescriptionId,
+                TaskDescriptionText = task.Description.TaskDescriptionText
+            } : null
+        };
     }
 }

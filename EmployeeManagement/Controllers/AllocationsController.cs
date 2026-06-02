@@ -31,6 +31,33 @@ public class AllocationsController : ControllerBase
     [HttpGet("task/{projectId}/{taskId}")]
     public async Task<IActionResult> GetByTask(string projectId, string taskId) => Ok(await _service.GetByTaskAsync(projectId, taskId));
 
+    [HttpGet("availability")]
+    public async Task<IActionResult> GetAvailability([FromQuery] AllocationAvailabilityRequest request)
+    {
+        var endDate = request.EndDate ?? request.StartDate;
+        if (request.StartDate == default)
+            return BadRequest("StartDate is required.");
+        if (request.StartDate.Date > endDate.Date)
+            return BadRequest("EndDate cannot be before StartDate.");
+        if (request.RequiredHoursPerDay.HasValue && request.RequiredHoursPerDay.Value <= 0)
+            return BadRequest("RequiredHoursPerDay must be greater than zero.");
+
+        return Ok(await _service.GetAvailabilityAsync(request));
+    }
+
+    [HttpPost("simulate")]
+    public async Task<IActionResult> Simulate(AllocationSimulationRequest request)
+    {
+        var endDate = request.EndDate ?? request.StartDate;
+        if (request.StartDate.Date > endDate.Date)
+            return BadRequest("EndDate cannot be before StartDate.");
+        if (request.HoursPerDay <= 0)
+            return BadRequest("HoursPerDay must be greater than zero.");
+
+        var result = await _service.SimulateAllocationAsync(request);
+        return Ok(result);
+    }
+
     [HttpPost]
     public async Task<IActionResult> Create(CreateAllocationRequest request)
     {

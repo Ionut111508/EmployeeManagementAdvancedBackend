@@ -47,7 +47,8 @@ public class AuthController : ControllerBase
             Username = account.Username,
             EmployeeId = employee.EmployeeId,
             FullName = $"{employee.FirstName} {employee.LastName}",
-            Role = role
+            Role = role,
+            Permissions = _userRoleService.GetPermissions(role)
         });
     }
 }

@@ -1,6 +1,11 @@
+-- Add and normalize Account.Role for role-based application access.
+-- Run this script manually on SQL Server before using role-aware screens.
+
 IF COL_LENGTH('Account', 'Role') IS NULL
 BEGIN
-    ALTER TABLE [Account] ADD [Role] NVARCHAR(30) NOT NULL CONSTRAINT DF_Account_Role DEFAULT 'Employee';
+    ALTER TABLE [Account]
+    ADD [Role] NVARCHAR(30) NOT NULL
+        CONSTRAINT DF_Account_Role DEFAULT 'Employee';
 END;
 GO
 

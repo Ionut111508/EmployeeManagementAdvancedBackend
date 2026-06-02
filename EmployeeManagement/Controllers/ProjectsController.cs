@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using EmployeeManagement.Data;
 using EmployeeManagement.Entities;
 using EmployeeManagement.DTOs;
+using EmployeeManagement.Services;
 
 namespace EmployeeManagement.Controllers
 {
@@ -11,10 +12,12 @@ namespace EmployeeManagement.Controllers
     public class ProjectsController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly IUserRoleService _userRoleService;
 
-        public ProjectsController(AppDbContext context)
+        public ProjectsController(AppDbContext context, IUserRoleService userRoleService)
         {
             _context = context;
+            _userRoleService = userRoleService;
         }
 
         [HttpGet]
@@ -23,6 +26,38 @@ namespace EmployeeManagement.Controllers
             var projects = await _context.Projects.ToListAsync();
             var dtos = projects.Select(p => new ProjectDto { ProjectId = p.ProjectId, ProjectName = p.ProjectName }).ToList();
             return Ok(dtos);
+        }
+
+        [HttpGet("visible-to/{viewerEmployeeId}")]
+        public async Task<ActionResult<IEnumerable<ProjectDto>>> GetVisibleTo(string viewerEmployeeId)
+        {
+            var access = await _userRoleService.GetAccessForEmployeeAsync(viewerEmployeeId);
+            if (access == null)
+                return NotFound("Viewer employee was not found.");
+
+            IQueryable<Project> query = _context.Projects.AsNoTracking();
+
+            if (access.Role == RoleNames.Employee)
+            {
+                query = query.Where(p => _context.Allocations.Any(a =>
+                    a.ProjectId == p.ProjectId && a.EmployeeId == viewerEmployeeId));
+            }
+            else if (access.Role == RoleNames.Manager)
+            {
+                var managedProjectIds = access.ManagedProjectIds;
+                query = query.Where(p => managedProjectIds.Contains(p.ProjectId));
+            }
+
+            var projects = await query
+                .OrderBy(p => p.ProjectName)
+                .Select(p => new ProjectDto
+                {
+                    ProjectId = p.ProjectId,
+                    ProjectName = p.ProjectName
+                })
+                .ToListAsync();
+
+            return Ok(projects);
         }
 
         [HttpGet("{id}")]

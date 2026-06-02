@@ -70,6 +70,7 @@ namespace EmployeeManagement.Data
                 entity.Property(x => x.AccountId).HasMaxLength(50);
                 entity.Property(x => x.Username).HasMaxLength(50).IsRequired();
                 entity.Property(x => x.Password).HasColumnName("PasswordHash").HasMaxLength(255).IsRequired();
+                entity.Property(x => x.Role).HasMaxLength(30).HasDefaultValue("Employee").IsRequired();
             });
 
             modelBuilder.Entity<TaskDescription>(entity =>

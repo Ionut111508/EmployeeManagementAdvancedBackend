@@ -24,6 +24,63 @@ public class AllocationResponse
     public decimal TotalAllocationHours { get; set; }
 }
 
+public class AllocationAvailabilityRequest
+{
+    public string? ProjectId { get; set; }
+    public string? EmployeeId { get; set; }
+    public string? SkillId { get; set; }
+    public DateTime StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public decimal? RequiredHoursPerDay { get; set; }
+    public bool OnlyProjectEmployees { get; set; }
+}
+
+public class AllocationAvailabilityResponse
+{
+    public string EmployeeId { get; set; } = null!;
+    public string FullName { get; set; } = null!;
+    public string? ProjectId { get; set; }
+    public bool IsAssignedToProject { get; set; }
+    public bool IsProjectManager { get; set; }
+    public decimal WorkNormHoursPerDay { get; set; }
+    public int WorkingDays { get; set; }
+    public decimal CapacityHours { get; set; }
+    public decimal ExistingAllocatedHours { get; set; }
+    public decimal AvailableHours { get; set; }
+    public decimal MinimumDailyAvailableHours { get; set; }
+    public bool IsOnLeave { get; set; }
+    public bool CanTakeRequestedHours { get; set; }
+    public string Status { get; set; } = null!;
+}
+
+public class AllocationSimulationRequest
+{
+    public string? EmployeeId { get; set; }
+    public string ProjectId { get; set; } = null!;
+    public string TaskId { get; set; } = null!;
+    public DateTime StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public decimal HoursPerDay { get; set; }
+    public string? SkillId { get; set; }
+}
+
+public class AllocationSimulationResponse
+{
+    public string ProjectId { get; set; } = null!;
+    public string TaskId { get; set; } = null!;
+    public string TaskName { get; set; } = null!;
+    public DateTime StartDate { get; set; }
+    public DateTime EndDate { get; set; }
+    public decimal HoursPerDay { get; set; }
+    public decimal RequestedTotalHours { get; set; }
+    public decimal CurrentTaskAllocatedHours { get; set; }
+    public decimal TaskEstimatedHours { get; set; }
+    public decimal TaskRemainingHoursAfterSimulation { get; set; }
+    public bool CanAllocate { get; set; }
+    public List<string> Reasons { get; set; } = new();
+    public List<AllocationAvailabilityResponse> Candidates { get; set; } = new();
+}
+
 public class TimesheetRequest
 {
     public string ProjectId { get; set; } = null!;

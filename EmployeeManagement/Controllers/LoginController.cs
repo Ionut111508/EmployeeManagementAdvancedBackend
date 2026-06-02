@@ -49,6 +49,7 @@ public class LoginController : ControllerBase
             Role = role,
             FullName = employee.FirstName + " " + employee.LastName,
             EmployeeId = employee.EmployeeId,
+            Permissions = _userRoleService.GetPermissions(role),
             ExpiresAt = expiresAt
         });
     }

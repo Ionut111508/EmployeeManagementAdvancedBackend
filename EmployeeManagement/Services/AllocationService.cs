@@ -56,6 +56,190 @@ public class AllocationService : IAllocationService
     public async Task<List<AllocationResponse>> GetByTaskAsync(string projectId, string taskId) =>
         await BuildAllocationQuery().Where(a => a.ProjectId == projectId && a.TaskId == taskId).ToListAsync();
 
+    public async Task<List<AllocationAvailabilityResponse>> GetAvailabilityAsync(AllocationAvailabilityRequest request)
+    {
+        var startDate = request.StartDate.Date;
+        var endDate = (request.EndDate ?? request.StartDate).Date;
+        var projectId = string.IsNullOrWhiteSpace(request.ProjectId) ? null : request.ProjectId;
+
+        var employeesQuery = _context.Employees
+            .AsNoTracking()
+            .Include(e => e.WorkNorm)
+            .AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(request.EmployeeId))
+            employeesQuery = employeesQuery.Where(e => e.EmployeeId == request.EmployeeId);
+
+        if (!string.IsNullOrWhiteSpace(request.SkillId))
+        {
+            employeesQuery = employeesQuery.Where(e =>
+                _context.EmployeeSkills.Any(s => s.EmployeeId == e.EmployeeId && s.SkillId == request.SkillId));
+        }
+
+        if (request.OnlyProjectEmployees && projectId != null)
+        {
+            employeesQuery = employeesQuery.Where(e =>
+                _context.Allocations.Any(a => a.EmployeeId == e.EmployeeId && a.ProjectId == projectId) ||
+                _context.ProjectManagers.Any(pm => pm.EmployeeId == e.EmployeeId && pm.ProjectId == projectId));
+        }
+
+        var employees = await employeesQuery
+            .OrderBy(e => e.FirstName)
+            .ThenBy(e => e.LastName)
+            .ToListAsync();
+
+        var projectEmployeeIds = projectId == null
+            ? new HashSet<string>()
+            : (await _context.Allocations
+                .AsNoTracking()
+                .Where(a => a.ProjectId == projectId)
+                .Select(a => a.EmployeeId)
+                .Distinct()
+                .ToListAsync()).ToHashSet();
+
+        var projectManagerIds = projectId == null
+            ? new HashSet<string>()
+            : (await _context.ProjectManagers
+                .AsNoTracking()
+                .Where(pm => pm.ProjectId == projectId)
+                .Select(pm => pm.EmployeeId)
+                .Distinct()
+                .ToListAsync()).ToHashSet();
+
+        var result = new List<AllocationAvailabilityResponse>();
+        foreach (var employee in employees)
+        {
+            var workNormHours = employee.WorkNorm?.WorkHours ?? 0;
+            var workingDays = CountWorkingDays(startDate, endDate);
+            var existingHours = 0m;
+            var minimumDailyAvailable = workingDays == 0 ? 0 : decimal.MaxValue;
+
+            for (var date = startDate; date <= endDate; date = date.AddDays(1))
+            {
+                if (date.DayOfWeek == DayOfWeek.Saturday || date.DayOfWeek == DayOfWeek.Sunday)
+                    continue;
+
+                var dailyAllocatedHours = await GetEmployeeAllocatedHoursForDateAsync(employee.EmployeeId, date);
+                existingHours += dailyAllocatedHours;
+                minimumDailyAvailable = Math.Min(minimumDailyAvailable, Math.Max(workNormHours - dailyAllocatedHours, 0));
+            }
+
+            if (minimumDailyAvailable == decimal.MaxValue)
+                minimumDailyAvailable = 0;
+
+            var capacityHours = workingDays * workNormHours;
+            var availableHours = Math.Max(capacityHours - existingHours, 0);
+            var isOnLeave = await IsEmployeeOnLeaveAsync(employee.EmployeeId, startDate, endDate);
+            var canTakeRequestedHours = !isOnLeave &&
+                workNormHours > 0 &&
+                (!request.RequiredHoursPerDay.HasValue || minimumDailyAvailable >= request.RequiredHoursPerDay.Value);
+
+            result.Add(new AllocationAvailabilityResponse
+            {
+                EmployeeId = employee.EmployeeId,
+                FullName = $"{employee.FirstName} {employee.LastName}",
+                ProjectId = projectId,
+                IsAssignedToProject = projectEmployeeIds.Contains(employee.EmployeeId),
+                IsProjectManager = projectManagerIds.Contains(employee.EmployeeId),
+                WorkNormHoursPerDay = workNormHours,
+                WorkingDays = workingDays,
+                CapacityHours = capacityHours,
+                ExistingAllocatedHours = existingHours,
+                AvailableHours = availableHours,
+                MinimumDailyAvailableHours = minimumDailyAvailable,
+                IsOnLeave = isOnLeave,
+                CanTakeRequestedHours = canTakeRequestedHours,
+                Status = isOnLeave
+                    ? "On leave"
+                    : canTakeRequestedHours
+                        ? "Available"
+                        : "Insufficient availability"
+            });
+        }
+
+        return result
+            .OrderByDescending(x => x.CanTakeRequestedHours)
+            .ThenByDescending(x => x.MinimumDailyAvailableHours)
+            .ThenByDescending(x => x.AvailableHours)
+            .ThenBy(x => x.FullName)
+            .ToList();
+    }
+
+    public async Task<AllocationSimulationResponse> SimulateAllocationAsync(AllocationSimulationRequest request)
+    {
+        var startDate = request.StartDate.Date;
+        var endDate = (request.EndDate ?? request.StartDate).Date;
+        var task = await _context.TaskItems
+            .AsNoTracking()
+            .FirstOrDefaultAsync(t => t.ProjectId == request.ProjectId && t.TaskId == request.TaskId);
+
+        if (task == null)
+        {
+            return new AllocationSimulationResponse
+            {
+                ProjectId = request.ProjectId,
+                TaskId = request.TaskId,
+                StartDate = startDate,
+                EndDate = endDate,
+                HoursPerDay = request.HoursPerDay,
+                CanAllocate = false,
+                Reasons = { "Task does not exist." }
+            };
+        }
+
+        var workingDays = CountWorkingDays(startDate, endDate);
+        var requestedTotalHours = workingDays * request.HoursPerDay;
+        var currentTaskAllocatedHours = await GetCurrentTaskAllocatedHoursAsync(request.ProjectId, request.TaskId);
+        var taskEstimatedHours = task.EstimatedHours ?? 0;
+        var taskRemainingAfterSimulation = taskEstimatedHours - currentTaskAllocatedHours - requestedTotalHours;
+
+        var availability = await GetAvailabilityAsync(new AllocationAvailabilityRequest
+        {
+            ProjectId = request.ProjectId,
+            EmployeeId = request.EmployeeId,
+            SkillId = request.SkillId,
+            StartDate = startDate,
+            EndDate = endDate,
+            RequiredHoursPerDay = request.HoursPerDay
+        });
+
+        var candidates = availability
+            .Where(a => a.CanTakeRequestedHours)
+            .Take(string.IsNullOrWhiteSpace(request.EmployeeId) ? 5 : 1)
+            .ToList();
+
+        var reasons = new List<string>();
+        if (startDate > endDate)
+            reasons.Add("EndDate cannot be before StartDate.");
+        if (request.HoursPerDay <= 0)
+            reasons.Add("HoursPerDay must be greater than zero.");
+        if (workingDays == 0)
+            reasons.Add("The selected interval has no working days.");
+        if (taskEstimatedHours > 0 && taskRemainingAfterSimulation < 0)
+            reasons.Add("The simulated allocation exceeds the task estimated hours.");
+        if (!candidates.Any())
+            reasons.Add(string.IsNullOrWhiteSpace(request.EmployeeId)
+                ? "No available employee found for this interval."
+                : "The selected employee is not available for this interval.");
+
+        return new AllocationSimulationResponse
+        {
+            ProjectId = request.ProjectId,
+            TaskId = request.TaskId,
+            TaskName = task.TaskName,
+            StartDate = startDate,
+            EndDate = endDate,
+            HoursPerDay = request.HoursPerDay,
+            RequestedTotalHours = requestedTotalHours,
+            CurrentTaskAllocatedHours = currentTaskAllocatedHours,
+            TaskEstimatedHours = taskEstimatedHours,
+            TaskRemainingHoursAfterSimulation = taskRemainingAfterSimulation,
+            CanAllocate = reasons.Count == 0,
+            Reasons = reasons,
+            Candidates = candidates
+        };
+    }
+
     public async Task<(bool Success, string? Error, AllocationResponse? Allocation)> CreateAllocationAsync(CreateAllocationRequest request)
     {
         var employee = await _context.Employees.Include(e => e.WorkNorm)
@@ -121,5 +305,50 @@ public class AllocationService : IAllocationService
                 AllocatedHours = a.AllocatedHours,
                 TotalAllocationHours = 0
             });
+    }
+
+    private async Task<decimal> GetCurrentTaskAllocatedHoursAsync(string projectId, string taskId)
+    {
+        var allocations = await _context.Allocations
+            .AsNoTracking()
+            .Where(a => a.ProjectId == projectId && a.TaskId == taskId)
+            .ToListAsync();
+
+        return allocations.Sum(a => CalculateTotalAllocationHours(
+            a.AllocationStartDate,
+            a.AllocationEndDate ?? a.AllocationStartDate,
+            a.AllocatedHours));
+    }
+
+    private async Task<bool> IsEmployeeOnLeaveAsync(string employeeId, DateTime startDate, DateTime endDate)
+    {
+        try
+        {
+            var connection = _context.Database.GetDbConnection();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(1) FROM EmployeeLeave WHERE EmployeeId = @employeeId AND StartDate <= @endDate AND EndDate >= @startDate";
+            var employeeParameter = command.CreateParameter();
+            employeeParameter.ParameterName = "@employeeId";
+            employeeParameter.Value = employeeId;
+            command.Parameters.Add(employeeParameter);
+            var startParameter = command.CreateParameter();
+            startParameter.ParameterName = "@startDate";
+            startParameter.Value = startDate.Date;
+            command.Parameters.Add(startParameter);
+            var endParameter = command.CreateParameter();
+            endParameter.ParameterName = "@endDate";
+            endParameter.Value = endDate.Date;
+            command.Parameters.Add(endParameter);
+
+            if (connection.State != System.Data.ConnectionState.Open)
+                await connection.OpenAsync();
+
+            var value = await command.ExecuteScalarAsync();
+            return Convert.ToInt32(value) > 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

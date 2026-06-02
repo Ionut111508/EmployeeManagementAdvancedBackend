@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using EmployeeManagement.Data;
 using EmployeeManagement.Entities;
 using EmployeeManagement.DTOs;
+using EmployeeManagement.Services;
 
 namespace EmployeeManagement.Controllers
 {
@@ -20,8 +21,13 @@ namespace EmployeeManagement.Controllers
         [HttpGet]
         public async Task<ActionResult<IEnumerable<AccountDto>>> GetAll()
         {
-            var accounts = await _context.Accounts.ToListAsync();
-            var dtos = accounts.Select(a => new AccountDto { AccountId = a.AccountId, Username = a.Username }).ToList();
+            var accounts = await _context.Accounts.AsNoTracking().ToListAsync();
+            var dtos = accounts.Select(a => new AccountDto
+            {
+                AccountId = a.AccountId,
+                Username = a.Username,
+                Role = RoleNames.Normalize(a.Role)
+            }).ToList();
             return Ok(dtos);
         }
 
@@ -32,7 +38,12 @@ namespace EmployeeManagement.Controllers
             if (account == null)
                 return NotFound("Account was not found.");
 
-            return Ok(new AccountDto { AccountId = account.AccountId, Username = account.Username });
+            return Ok(new AccountDto
+            {
+                AccountId = account.AccountId,
+                Username = account.Username,
+                Role = RoleNames.Normalize(account.Role)
+            });
         }
 
         [HttpPost]
@@ -40,6 +51,9 @@ namespace EmployeeManagement.Controllers
         {
             if (string.IsNullOrWhiteSpace(dto.AccountId) || string.IsNullOrWhiteSpace(dto.Username) || string.IsNullOrWhiteSpace(dto.Password))
                 return BadRequest("AccountId, Username and Password are required.");
+
+            if (!RoleNames.IsValid(dto.Role))
+                return BadRequest("Role must be Admin, Manager or Employee.");
 
             var accountIdExists = await _context.Accounts.AnyAsync(a => a.AccountId == dto.AccountId);
             if (accountIdExists)
@@ -53,13 +67,19 @@ namespace EmployeeManagement.Controllers
             {
                 AccountId = dto.AccountId,
                 Username = dto.Username,
-                Password = dto.Password
+                Password = dto.Password,
+                Role = RoleNames.Normalize(dto.Role)
             };
 
             _context.Accounts.Add(account);
             await _context.SaveChangesAsync();
 
-            var resultDto = new AccountDto { AccountId = account.AccountId, Username = account.Username };
+            var resultDto = new AccountDto
+            {
+                AccountId = account.AccountId,
+                Username = account.Username,
+                Role = account.Role
+            };
             return CreatedAtAction(nameof(GetById), new { id = account.AccountId }, resultDto);
         }
 
@@ -68,6 +88,9 @@ namespace EmployeeManagement.Controllers
         {
             if (string.IsNullOrWhiteSpace(dto.Username))
                 return BadRequest("Username is required.");
+
+            if (!RoleNames.IsValid(dto.Role))
+                return BadRequest("Role must be Admin, Manager or Employee.");
 
             var account = await _context.Accounts.FindAsync(id);
             if (account == null)
@@ -78,6 +101,7 @@ namespace EmployeeManagement.Controllers
                 return BadRequest("Username is already used by another account.");
 
             account.Username = dto.Username;
+            account.Role = RoleNames.Normalize(dto.Role);
             if (!string.IsNullOrWhiteSpace(dto.Password))
                 account.Password = dto.Password;
 

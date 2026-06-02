@@ -13,4 +13,6 @@ public interface IAllocationService
     Task<List<AllocationResponse>> GetByEmployeeAsync(string employeeId);
     Task<List<AllocationResponse>> GetByProjectAsync(string projectId);
     Task<List<AllocationResponse>> GetByTaskAsync(string projectId, string taskId);
+    Task<List<AllocationAvailabilityResponse>> GetAvailabilityAsync(AllocationAvailabilityRequest request);
+    Task<AllocationSimulationResponse> SimulateAllocationAsync(AllocationSimulationRequest request);
 }
