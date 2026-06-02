@@ -6,17 +6,17 @@ namespace EmployeeManagement.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class RolesController : ControllerBase
+public class EmployeeRolesController : ControllerBase
 {
     private readonly IUserRoleService _userRoleService;
 
-    public RolesController(IUserRoleService userRoleService)
+    public EmployeeRolesController(IUserRoleService userRoleService)
     {
         _userRoleService = userRoleService;
     }
 
-    [HttpGet("employees")]
-    public async Task<ActionResult<IEnumerable<EmployeeRoleDto>>> GetEmployeeRoles()
+    [HttpGet]
+    public async Task<ActionResult<IEnumerable<EmployeeRoleDto>>> GetAll()
     {
         return Ok(await _userRoleService.GetEmployeeRolesAsync());
     }

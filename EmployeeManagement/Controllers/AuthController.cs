@@ -8,19 +8,19 @@ namespace EmployeeManagement.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class LoginController : ControllerBase
+public class AuthController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly IUserRoleService _userRoleService;
 
-    public LoginController(AppDbContext context, IUserRoleService userRoleService)
+    public AuthController(AppDbContext context, IUserRoleService userRoleService)
     {
         _context = context;
         _userRoleService = userRoleService;
     }
 
-    [HttpPost]
-    public async Task<ActionResult<LoginResponse>> Login(LoginRequest request)
+    [HttpPost("login")]
+    public async Task<ActionResult<LoginResponseDto>> Login(LoginRequestDto request)
     {
         if (string.IsNullOrWhiteSpace(request.Username) || string.IsNullOrWhiteSpace(request.Password))
             return BadRequest("Username and password are required.");
@@ -35,21 +35,19 @@ public class LoginController : ControllerBase
         var employee = await _context.Employees
             .AsNoTracking()
             .FirstOrDefaultAsync(e => e.AccountId == account.AccountId);
+
         if (employee == null)
             return BadRequest("No employee is linked to this account.");
 
         var role = await _userRoleService.GetRoleForEmployeeAsync(employee.EmployeeId, account.Username);
-        var expiresAt = DateTime.UtcNow.AddHours(8);
 
-        return Ok(new LoginResponse
+        return Ok(new LoginResponseDto
         {
-            Token = $"demo.{account.AccountId}.{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}",
             AccountId = account.AccountId,
             Username = account.Username,
-            Role = role,
-            FullName = employee.FirstName + " " + employee.LastName,
             EmployeeId = employee.EmployeeId,
-            ExpiresAt = expiresAt
+            FullName = $"{employee.FirstName} {employee.LastName}",
+            Role = role
         });
     }
 }
