@@ -7,8 +7,10 @@ namespace EmployeeManagement.DTOs
         public string TaskName { get; set; } = null!;
         public decimal? EstimatedHours { get; set; }
         public string? DescriptionId { get; set; }
+        public string? RequiredSkillId { get; set; }
         public ProjectDto? Project { get; set; }
         public TaskDescriptionDto? Description { get; set; }
+        public SkillDto? RequiredSkill { get; set; }
     }
 
     public class TaskItemCreateDto
@@ -18,6 +20,7 @@ namespace EmployeeManagement.DTOs
         public string TaskName { get; set; } = null!;
         public decimal? EstimatedHours { get; set; }
         public string? DescriptionId { get; set; }
+        public string? RequiredSkillId { get; set; }
     }
 
     public class TaskItemUpdateDto
@@ -25,5 +28,6 @@ namespace EmployeeManagement.DTOs
         public string TaskName { get; set; } = null!;
         public decimal? EstimatedHours { get; set; }
         public string? DescriptionId { get; set; }
+        public string? RequiredSkillId { get; set; }
     }
 }

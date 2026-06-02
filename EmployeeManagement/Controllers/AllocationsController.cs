@@ -45,6 +45,24 @@ public class AllocationsController : ControllerBase
         return Ok(await _service.GetAvailabilityAsync(request));
     }
 
+    [HttpGet("underutilized")]
+    public async Task<IActionResult> GetUnderutilized([FromQuery] AllocationAvailabilityRequest request)
+    {
+        var endDate = request.EndDate ?? request.StartDate;
+        if (request.StartDate == default)
+            return BadRequest("StartDate is required.");
+        if (request.StartDate.Date > endDate.Date)
+            return BadRequest("EndDate cannot be before StartDate.");
+
+        var result = await _service.GetAvailabilityAsync(request);
+        return Ok(result
+            .Where(x => !x.IsOnLeave && x.AvailableHours > 0)
+            .OrderByDescending(x => x.MinimumDailyAvailableHours)
+            .ThenByDescending(x => x.AvailableHours)
+            .ThenBy(x => x.FullName)
+            .ToList());
+    }
+
     [HttpPost("simulate")]
     public async Task<IActionResult> Simulate(AllocationSimulationRequest request)
     {
@@ -75,45 +93,28 @@ public class AllocationsController : ControllerBase
         var endDate = request.EndDate ?? request.StartDate;
         if (request.StartDate.Date > endDate.Date || request.HoursPerDay <= 0) return BadRequest("Invalid interval or hours.");
 
-        var taskExists = await _context.TaskItems.AnyAsync(t => t.ProjectId == request.ProjectId && t.TaskId == request.TaskId);
-        if (!taskExists) return BadRequest("Task does not exist.");
+        var task = await _context.TaskItems
+            .AsNoTracking()
+            .FirstOrDefaultAsync(t => t.ProjectId == request.ProjectId && t.TaskId == request.TaskId);
+        if (task == null) return BadRequest("Task does not exist.");
 
-        var employees = await _context.Employees.Include(e => e.WorkNorm).ToListAsync();
-        if (!string.IsNullOrWhiteSpace(request.SkillId))
+        var effectiveSkillId = string.IsNullOrWhiteSpace(request.SkillId) ? task.RequiredSkillId : request.SkillId;
+        var candidates = await _service.GetAvailabilityAsync(new AllocationAvailabilityRequest
         {
-            var skilledIds = await _context.EmployeeSkills.Where(s => s.SkillId == request.SkillId).Select(s => s.EmployeeId).ToListAsync();
-            employees = employees.Where(e => skilledIds.Contains(e.EmployeeId)).ToList();
-        }
+            ProjectId = request.ProjectId,
+            SkillId = effectiveSkillId,
+            StartDate = request.StartDate.Date,
+            EndDate = endDate.Date,
+            RequiredHoursPerDay = request.HoursPerDay
+        });
 
-        string? selectedEmployeeId = null;
-        decimal bestLoad = decimal.MaxValue;
-
-        foreach (var employee in employees)
-        {
-            if (employee.WorkNorm == null) continue;
-            if (await IsEmployeeOnLeaveAsync(employee.EmployeeId, request.StartDate, endDate)) continue;
-
-            var valid = true;
-            decimal load = 0;
-
-            for (var date = request.StartDate.Date; date <= endDate.Date; date = date.AddDays(1))
-            {
-                if (date.DayOfWeek == DayOfWeek.Saturday || date.DayOfWeek == DayOfWeek.Sunday) continue;
-                var existingHours = await _service.GetEmployeeAllocatedHoursForDateAsync(employee.EmployeeId, date);
-                if (existingHours + request.HoursPerDay > employee.WorkNorm.WorkHours)
-                {
-                    valid = false;
-                    break;
-                }
-                load += existingHours;
-            }
-
-            if (valid && load < bestLoad)
-            {
-                bestLoad = load;
-                selectedEmployeeId = employee.EmployeeId;
-            }
-        }
+        var selectedEmployeeId = candidates
+            .Where(c => c.CanTakeRequestedHours)
+            .OrderBy(c => c.ExistingAllocatedHours)
+            .ThenByDescending(c => c.MinimumDailyAvailableHours)
+            .ThenBy(c => c.FullName)
+            .Select(c => c.EmployeeId)
+            .FirstOrDefault();
 
         if (selectedEmployeeId == null) return BadRequest("No available employee found for this interval. The task should be delayed or assigned manually to a replacement.");
 

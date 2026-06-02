@@ -112,4 +112,63 @@ public class AllocationServiceTests
         Assert.False(result.Success);
         Assert.Equal("Work norm exceeded.", result.Error);
     }
+
+    [Fact]
+    public async Task CreateAllocationAsync_RejectsEmployeeBelowRequiredSkill()
+    {
+        using var context = CreateContext();
+        context.WorkNorms.Add(new WorkNorm { WorkNormId = "N1", WorkNormName = "Full", WorkHours = 8m });
+        context.Accounts.Add(new Account { AccountId = "C1", Username = "user", Password = "pass" });
+        context.Employees.Add(new Employee { EmployeeId = "E1", FirstName = "Ion", LastName = "Pop", Email = "ion@test.ro", PhoneNumber = "0700000000", AccountId = "C1", WorkNormId = "N1" });
+        context.Projects.Add(new Project { ProjectId = "P1", ProjectName = "Project" });
+        context.Descriptions.Add(new TaskDescription { DescriptionId = "D1", TaskDescriptionText = "Task description" });
+        context.Skills.AddRange(
+            new Skill { SkillId = "DOTNET_JR", SkillName = ".NET", SkillLevel = "Junior" },
+            new Skill { SkillId = "DOTNET_MID", SkillName = ".NET", SkillLevel = "Medium" });
+        context.EmployeeSkills.Add(new EmployeeSkill { EmployeeId = "E1", SkillId = "DOTNET_JR", AcquiredDate = new DateTime(2026, 1, 1) });
+        context.TaskItems.Add(new TaskItem { ProjectId = "P1", TaskId = "T1", TaskName = "Task", EstimatedHours = 40m, DescriptionId = "D1", RequiredSkillId = "DOTNET_MID" });
+        await context.SaveChangesAsync();
+
+        var service = new AllocationService(context);
+        var result = await service.CreateAllocationAsync(new CreateAllocationRequest
+        {
+            EmployeeId = "E1",
+            ProjectId = "P1",
+            TaskId = "T1",
+            AllocationStartDate = new DateTime(2026, 5, 18),
+            AllocationEndDate = new DateTime(2026, 5, 22),
+            AllocatedHours = 4m
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("Employee does not meet the task required skill level.", result.Error);
+    }
+
+    [Fact]
+    public async Task GetAvailabilityAsync_AllowsSeniorForMediumRequirement()
+    {
+        using var context = CreateContext();
+        context.WorkNorms.Add(new WorkNorm { WorkNormId = "N1", WorkNormName = "Full", WorkHours = 8m });
+        context.Accounts.Add(new Account { AccountId = "C1", Username = "user", Password = "pass" });
+        context.Employees.Add(new Employee { EmployeeId = "E1", FirstName = "Ion", LastName = "Pop", Email = "ion@test.ro", PhoneNumber = "0700000000", AccountId = "C1", WorkNormId = "N1" });
+        context.Skills.AddRange(
+            new Skill { SkillId = "QA_MID", SkillName = "QA", SkillLevel = "Medium" },
+            new Skill { SkillId = "QA_SENIOR", SkillName = "QA", SkillLevel = "Senior" });
+        context.EmployeeSkills.Add(new EmployeeSkill { EmployeeId = "E1", SkillId = "QA_SENIOR", AcquiredDate = new DateTime(2026, 1, 1) });
+        await context.SaveChangesAsync();
+
+        var service = new AllocationService(context);
+        var result = await service.GetAvailabilityAsync(new AllocationAvailabilityRequest
+        {
+            SkillId = "QA_MID",
+            StartDate = new DateTime(2026, 5, 18),
+            EndDate = new DateTime(2026, 5, 22),
+            RequiredHoursPerDay = 4m
+        });
+
+        var employee = Assert.Single(result);
+        Assert.True(employee.MeetsSkillRequirement);
+        Assert.True(employee.CanTakeRequestedHours);
+        Assert.Equal("QA_SENIOR", employee.MatchedSkillId);
+    }
 }

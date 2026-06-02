@@ -70,11 +70,7 @@ public class AllocationService : IAllocationService
         if (!string.IsNullOrWhiteSpace(request.EmployeeId))
             employeesQuery = employeesQuery.Where(e => e.EmployeeId == request.EmployeeId);
 
-        if (!string.IsNullOrWhiteSpace(request.SkillId))
-        {
-            employeesQuery = employeesQuery.Where(e =>
-                _context.EmployeeSkills.Any(s => s.EmployeeId == e.EmployeeId && s.SkillId == request.SkillId));
-        }
+        var requiredSkill = await GetRequiredSkillAsync(request.SkillId);
 
         if (request.OnlyProjectEmployees && projectId != null)
         {
@@ -109,6 +105,7 @@ public class AllocationService : IAllocationService
         var result = new List<AllocationAvailabilityResponse>();
         foreach (var employee in employees)
         {
+            var skillMatch = await GetEmployeeSkillMatchAsync(employee.EmployeeId, requiredSkill);
             var workNormHours = employee.WorkNorm?.WorkHours ?? 0;
             var workingDays = CountWorkingDays(startDate, endDate);
             var existingHours = 0m;
@@ -130,7 +127,8 @@ public class AllocationService : IAllocationService
             var capacityHours = workingDays * workNormHours;
             var availableHours = Math.Max(capacityHours - existingHours, 0);
             var isOnLeave = await IsEmployeeOnLeaveAsync(employee.EmployeeId, startDate, endDate);
-            var canTakeRequestedHours = !isOnLeave &&
+            var canTakeRequestedHours = skillMatch.MeetsRequirement &&
+                !isOnLeave &&
                 workNormHours > 0 &&
                 (!request.RequiredHoursPerDay.HasValue || minimumDailyAvailable >= request.RequiredHoursPerDay.Value);
 
@@ -148,8 +146,17 @@ public class AllocationService : IAllocationService
                 AvailableHours = availableHours,
                 MinimumDailyAvailableHours = minimumDailyAvailable,
                 IsOnLeave = isOnLeave,
+                MeetsSkillRequirement = skillMatch.MeetsRequirement,
+                RequiredSkillId = requiredSkill?.SkillId,
+                RequiredSkillName = requiredSkill?.SkillName,
+                RequiredSkillLevel = requiredSkill?.SkillLevel,
+                MatchedSkillId = skillMatch.MatchedSkill?.SkillId,
+                MatchedSkillName = skillMatch.MatchedSkill?.SkillName,
+                MatchedSkillLevel = skillMatch.MatchedSkill?.SkillLevel,
                 CanTakeRequestedHours = canTakeRequestedHours,
-                Status = isOnLeave
+                Status = !skillMatch.MeetsRequirement
+                    ? "Skill requirement not met"
+                    : isOnLeave
                     ? "On leave"
                     : canTakeRequestedHours
                         ? "Available"
@@ -171,6 +178,7 @@ public class AllocationService : IAllocationService
         var endDate = (request.EndDate ?? request.StartDate).Date;
         var task = await _context.TaskItems
             .AsNoTracking()
+            .Include(t => t.RequiredSkill)
             .FirstOrDefaultAsync(t => t.ProjectId == request.ProjectId && t.TaskId == request.TaskId);
 
         if (task == null)
@@ -193,11 +201,13 @@ public class AllocationService : IAllocationService
         var taskEstimatedHours = task.EstimatedHours ?? 0;
         var taskRemainingAfterSimulation = taskEstimatedHours - currentTaskAllocatedHours - requestedTotalHours;
 
+        var effectiveSkillId = string.IsNullOrWhiteSpace(request.SkillId) ? task.RequiredSkillId : request.SkillId;
+
         var availability = await GetAvailabilityAsync(new AllocationAvailabilityRequest
         {
             ProjectId = request.ProjectId,
             EmployeeId = request.EmployeeId,
-            SkillId = request.SkillId,
+            SkillId = effectiveSkillId,
             StartDate = startDate,
             EndDate = endDate,
             RequiredHoursPerDay = request.HoursPerDay
@@ -219,8 +229,8 @@ public class AllocationService : IAllocationService
             reasons.Add("The simulated allocation exceeds the task estimated hours.");
         if (!candidates.Any())
             reasons.Add(string.IsNullOrWhiteSpace(request.EmployeeId)
-                ? "No available employee found for this interval."
-                : "The selected employee is not available for this interval.");
+                ? "No available employee found for this interval and required skill."
+                : "The selected employee is not available or does not meet the required skill.");
 
         return new AllocationSimulationResponse
         {
@@ -234,6 +244,9 @@ public class AllocationService : IAllocationService
             CurrentTaskAllocatedHours = currentTaskAllocatedHours,
             TaskEstimatedHours = taskEstimatedHours,
             TaskRemainingHoursAfterSimulation = taskRemainingAfterSimulation,
+            RequiredSkillId = task.RequiredSkillId,
+            RequiredSkillName = task.RequiredSkill?.SkillName,
+            RequiredSkillLevel = task.RequiredSkill?.SkillLevel,
             CanAllocate = reasons.Count == 0,
             Reasons = reasons,
             Candidates = candidates
@@ -246,8 +259,11 @@ public class AllocationService : IAllocationService
             .FirstOrDefaultAsync(e => e.EmployeeId == request.EmployeeId);
         if (employee?.WorkNorm == null) return (false, "Invalid employee or work norm.", null);
         var task = await _context.TaskItems.Include(t => t.Project)
+            .Include(t => t.RequiredSkill)
             .FirstOrDefaultAsync(t => t.ProjectId == request.ProjectId && t.TaskId == request.TaskId);
         if (task == null) return (false, "Invalid task.", null);
+        if (!await EmployeeMeetsSkillRequirementAsync(request.EmployeeId, task.RequiredSkillId))
+            return (false, "Employee does not meet the task required skill level.", null);
         var endDate = request.AllocationEndDate ?? request.AllocationStartDate;
         if (request.AllocationStartDate.Date > endDate.Date) return (false, "Invalid interval.", null);
         if (request.AllocatedHours <= 0) return (false, "Invalid hours.", null);
@@ -300,6 +316,9 @@ public class AllocationService : IAllocationService
                 EmployeeName = a.Employee == null ? null : a.Employee.LastName + " " + a.Employee.FirstName,
                 ProjectName = a.Project == null ? null : a.Project.ProjectName,
                 TaskName = a.TaskItem == null ? null : a.TaskItem.TaskName,
+                RequiredSkillId = a.TaskItem == null ? null : a.TaskItem.RequiredSkillId,
+                RequiredSkillName = a.TaskItem == null || a.TaskItem.RequiredSkill == null ? null : a.TaskItem.RequiredSkill.SkillName,
+                RequiredSkillLevel = a.TaskItem == null || a.TaskItem.RequiredSkill == null ? null : a.TaskItem.RequiredSkill.SkillLevel,
                 AllocationStartDate = a.AllocationStartDate,
                 AllocationEndDate = a.AllocationEndDate,
                 AllocatedHours = a.AllocatedHours,
@@ -351,4 +370,60 @@ public class AllocationService : IAllocationService
             return false;
         }
     }
+
+    public async Task<bool> EmployeeMeetsSkillRequirementAsync(string employeeId, string? requiredSkillId)
+    {
+        var requiredSkill = await GetRequiredSkillAsync(requiredSkillId);
+        return (await GetEmployeeSkillMatchAsync(employeeId, requiredSkill)).MeetsRequirement;
+    }
+
+    private async Task<Skill?> GetRequiredSkillAsync(string? requiredSkillId)
+    {
+        if (string.IsNullOrWhiteSpace(requiredSkillId))
+            return null;
+
+        return await _context.Skills
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.SkillId == requiredSkillId);
+    }
+
+    private async Task<SkillMatch> GetEmployeeSkillMatchAsync(string employeeId, Skill? requiredSkill)
+    {
+        if (requiredSkill == null)
+            return new SkillMatch(true, null);
+
+        var employeeSkills = await _context.EmployeeSkills
+            .AsNoTracking()
+            .Include(es => es.Skill)
+            .Where(es => es.EmployeeId == employeeId && es.Skill != null)
+            .Select(es => es.Skill!)
+            .ToListAsync();
+
+        var requiredRank = GetSkillLevelRank(requiredSkill.SkillLevel);
+        var match = employeeSkills
+            .Where(skill => string.Equals(skill.SkillName, requiredSkill.SkillName, StringComparison.OrdinalIgnoreCase))
+            .Where(skill => GetSkillLevelRank(skill.SkillLevel) >= requiredRank)
+            .OrderBy(skill => GetSkillLevelRank(skill.SkillLevel))
+            .FirstOrDefault();
+
+        return new SkillMatch(match != null, match);
+    }
+
+    private static int GetSkillLevelRank(string? level)
+    {
+        if (string.IsNullOrWhiteSpace(level))
+            return 0;
+
+        var normalized = level.Trim().ToLowerInvariant();
+        if (normalized.Contains("junior") || normalized is "1" or "basic" or "beginner" or "incepator")
+            return 1;
+        if (normalized.Contains("mid") || normalized.Contains("medium") || normalized.Contains("mediu") || normalized is "2")
+            return 2;
+        if (normalized.Contains("senior") || normalized.Contains("expert") || normalized is "3" or "advanced" or "avansat")
+            return 3;
+
+        return 0;
+    }
+
+    private sealed record SkillMatch(bool MeetsRequirement, Skill? MatchedSkill);
 }

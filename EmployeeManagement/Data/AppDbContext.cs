@@ -50,7 +50,7 @@ namespace EmployeeManagement.Data
             {
                 entity.ToTable("Skill");
                 entity.HasKey(x => x.SkillId);
-                entity.Property(x => x.SkillId).HasMaxLength(50);
+                entity.Property(x => x.SkillId).HasMaxLength(50).IsUnicode(false);
                 entity.Property(x => x.SkillName).HasMaxLength(50).IsRequired();
                 entity.Property(x => x.SkillLevel).HasMaxLength(50);
             });
@@ -107,8 +107,10 @@ namespace EmployeeManagement.Data
                 entity.Property(x => x.TaskName).HasMaxLength(100).IsRequired();
                 entity.Property(x => x.EstimatedHours).HasColumnType("decimal(10,2)");
                 entity.Property(x => x.DescriptionId).HasColumnName("TaskDescriptionId").HasMaxLength(50).IsRequired();
+                entity.Property(x => x.RequiredSkillId).HasMaxLength(50).IsUnicode(false);
                 entity.HasOne(x => x.Project).WithMany(x => x.TaskItems).HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasOne(x => x.Description).WithMany().HasForeignKey(x => x.DescriptionId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(x => x.RequiredSkill).WithMany().HasForeignKey(x => x.RequiredSkillId).OnDelete(DeleteBehavior.Restrict);
             });
 
             modelBuilder.Entity<TaskComment>(entity =>

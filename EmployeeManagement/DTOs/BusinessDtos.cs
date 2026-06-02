@@ -18,6 +18,9 @@ public class AllocationResponse
     public string? EmployeeName { get; set; }
     public string? ProjectName { get; set; }
     public string? TaskName { get; set; }
+    public string? RequiredSkillId { get; set; }
+    public string? RequiredSkillName { get; set; }
+    public string? RequiredSkillLevel { get; set; }
     public DateTime? AllocationStartDate { get; set; }
     public DateTime? AllocationEndDate { get; set; }
     public decimal AllocatedHours { get; set; }
@@ -49,6 +52,13 @@ public class AllocationAvailabilityResponse
     public decimal AvailableHours { get; set; }
     public decimal MinimumDailyAvailableHours { get; set; }
     public bool IsOnLeave { get; set; }
+    public bool MeetsSkillRequirement { get; set; } = true;
+    public string? RequiredSkillId { get; set; }
+    public string? RequiredSkillName { get; set; }
+    public string? RequiredSkillLevel { get; set; }
+    public string? MatchedSkillId { get; set; }
+    public string? MatchedSkillName { get; set; }
+    public string? MatchedSkillLevel { get; set; }
     public bool CanTakeRequestedHours { get; set; }
     public string Status { get; set; } = null!;
 }
@@ -76,8 +86,27 @@ public class AllocationSimulationResponse
     public decimal CurrentTaskAllocatedHours { get; set; }
     public decimal TaskEstimatedHours { get; set; }
     public decimal TaskRemainingHoursAfterSimulation { get; set; }
+    public string? RequiredSkillId { get; set; }
+    public string? RequiredSkillName { get; set; }
+    public string? RequiredSkillLevel { get; set; }
     public bool CanAllocate { get; set; }
     public List<string> Reasons { get; set; } = new();
+    public List<AllocationAvailabilityResponse> Candidates { get; set; } = new();
+}
+
+public class TaskStaffingResponse
+{
+    public string ProjectId { get; set; } = null!;
+    public string ProjectName { get; set; } = null!;
+    public string TaskId { get; set; } = null!;
+    public string TaskName { get; set; } = null!;
+    public decimal EstimatedHours { get; set; }
+    public decimal AllocatedHours { get; set; }
+    public decimal RemainingHours { get; set; }
+    public string? RequiredSkillId { get; set; }
+    public string? RequiredSkillName { get; set; }
+    public string? RequiredSkillLevel { get; set; }
+    public string Status { get; set; } = null!;
     public List<AllocationAvailabilityResponse> Candidates { get; set; } = new();
 }
 

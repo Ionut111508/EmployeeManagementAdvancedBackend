@@ -13,11 +13,13 @@ namespace EmployeeManagement.Controllers
     {
         private readonly AppDbContext _context;
         private readonly IUserRoleService _userRoleService;
+        private readonly IAllocationService _allocationService;
 
-        public TasksController(AppDbContext context, IUserRoleService userRoleService)
+        public TasksController(AppDbContext context, IUserRoleService userRoleService, IAllocationService allocationService)
         {
             _context = context;
             _userRoleService = userRoleService;
+            _allocationService = allocationService;
         }
 
         [HttpGet]
@@ -26,18 +28,10 @@ namespace EmployeeManagement.Controllers
             var tasks = await _context.TaskItems
                 .Include(t => t.Project)
                 .Include(t => t.Description)
+                .Include(t => t.RequiredSkill)
                 .ToListAsync();
 
-            var dtos = tasks.Select(t => new TaskItemDto
-            {
-                ProjectId = t.ProjectId,
-                TaskId = t.TaskId,
-                TaskName = t.TaskName,
-                EstimatedHours = t.EstimatedHours,
-                DescriptionId = t.DescriptionId,
-                Project = t.Project != null ? new ProjectDto { ProjectId = t.Project.ProjectId, ProjectName = t.Project.ProjectName } : null,
-                Description = t.Description != null ? new TaskDescriptionDto { DescriptionId = t.Description.DescriptionId, TaskDescriptionText = t.Description.TaskDescriptionText } : null
-            }).ToList();
+            var dtos = tasks.Select(ToDto).ToList();
 
             return Ok(dtos);
         }
@@ -52,7 +46,8 @@ namespace EmployeeManagement.Controllers
             IQueryable<TaskItem> query = _context.TaskItems
                 .AsNoTracking()
                 .Include(t => t.Project)
-                .Include(t => t.Description);
+                .Include(t => t.Description)
+                .Include(t => t.RequiredSkill);
 
             if (access.Role == RoleNames.Employee)
             {
@@ -81,23 +76,84 @@ namespace EmployeeManagement.Controllers
             var task = await _context.TaskItems
                 .Include(t => t.Project)
                 .Include(t => t.Description)
+                .Include(t => t.RequiredSkill)
                 .FirstOrDefaultAsync(t => t.ProjectId == projectId && t.TaskId == taskId);
 
             if (task == null)
                 return NotFound();
 
-            var dto = new TaskItemDto
-            {
-                ProjectId = task.ProjectId,
-                TaskId = task.TaskId,
-                TaskName = task.TaskName,
-                EstimatedHours = task.EstimatedHours,
-                DescriptionId = task.DescriptionId,
-                Project = task.Project != null ? new ProjectDto { ProjectId = task.Project.ProjectId, ProjectName = task.Project.ProjectName } : null,
-                Description = task.Description != null ? new TaskDescriptionDto { DescriptionId = task.Description.DescriptionId, TaskDescriptionText = task.Description.TaskDescriptionText } : null
-            };
+            return Ok(ToDto(task));
+        }
 
-            return Ok(dto);
+        [HttpGet("staffing")]
+        public async Task<ActionResult<IEnumerable<TaskStaffingResponse>>> GetStaffing([FromQuery] DateTime startDate, [FromQuery] DateTime? endDate, [FromQuery] string? projectId, [FromQuery] decimal hoursPerDay = 1)
+        {
+            if (startDate == default)
+                return BadRequest("StartDate is required.");
+
+            var end = (endDate ?? startDate).Date;
+            if (startDate.Date > end)
+                return BadRequest("EndDate cannot be before StartDate.");
+            if (hoursPerDay <= 0)
+                return BadRequest("HoursPerDay must be greater than zero.");
+
+            var query = _context.TaskItems
+                .AsNoTracking()
+                .Include(t => t.Project)
+                .Include(t => t.RequiredSkill)
+                .Include(t => t.Allocations)
+                .AsQueryable();
+
+            if (!string.IsNullOrWhiteSpace(projectId))
+                query = query.Where(t => t.ProjectId == projectId);
+
+            var tasks = await query
+                .OrderBy(t => t.ProjectId)
+                .ThenBy(t => t.TaskName)
+                .ToListAsync();
+
+            var result = new List<TaskStaffingResponse>();
+            foreach (var task in tasks)
+            {
+                var estimated = task.EstimatedHours ?? 0;
+                var allocated = task.Allocations.Sum(a => _allocationService.CalculateTotalAllocationHours(
+                    a.AllocationStartDate,
+                    a.AllocationEndDate ?? a.AllocationStartDate,
+                    a.AllocatedHours));
+                var remaining = Math.Max(estimated - allocated, 0);
+                var candidates = remaining <= 0
+                    ? new List<AllocationAvailabilityResponse>()
+                    : (await _allocationService.GetAvailabilityAsync(new AllocationAvailabilityRequest
+                    {
+                        ProjectId = task.ProjectId,
+                        SkillId = task.RequiredSkillId,
+                        StartDate = startDate.Date,
+                        EndDate = end,
+                        RequiredHoursPerDay = hoursPerDay
+                    })).Where(c => c.CanTakeRequestedHours).Take(5).ToList();
+
+                result.Add(new TaskStaffingResponse
+                {
+                    ProjectId = task.ProjectId,
+                    ProjectName = task.Project?.ProjectName ?? task.ProjectId,
+                    TaskId = task.TaskId,
+                    TaskName = task.TaskName,
+                    EstimatedHours = estimated,
+                    AllocatedHours = allocated,
+                    RemainingHours = remaining,
+                    RequiredSkillId = task.RequiredSkillId,
+                    RequiredSkillName = task.RequiredSkill?.SkillName,
+                    RequiredSkillLevel = task.RequiredSkill?.SkillLevel,
+                    Status = remaining <= 0
+                        ? "Fully staffed"
+                        : candidates.Any()
+                            ? "Needs more allocation"
+                            : "No available qualified employee",
+                    Candidates = candidates
+                });
+            }
+
+            return Ok(result.OrderByDescending(x => x.RemainingHours).ThenBy(x => x.ProjectName).ThenBy(x => x.TaskName));
         }
 
         [HttpPost]
@@ -117,6 +173,8 @@ namespace EmployeeManagement.Controllers
             var descriptionExists = await _context.Descriptions.AnyAsync(d => d.DescriptionId == dto.DescriptionId);
             if (!descriptionExists)
                 return BadRequest("Task description does not exist");
+            if (!string.IsNullOrWhiteSpace(dto.RequiredSkillId) && !await _context.Skills.AnyAsync(s => s.SkillId == dto.RequiredSkillId))
+                return BadRequest("Required skill does not exist");
 
             var task = new TaskItem
             {
@@ -124,7 +182,8 @@ namespace EmployeeManagement.Controllers
                 TaskId = dto.TaskId,
                 TaskName = dto.TaskName,
                 EstimatedHours = dto.EstimatedHours,
-                DescriptionId = dto.DescriptionId
+                DescriptionId = dto.DescriptionId,
+                RequiredSkillId = string.IsNullOrWhiteSpace(dto.RequiredSkillId) ? null : dto.RequiredSkillId
             };
 
             _context.TaskItems.Add(task);
@@ -141,17 +200,9 @@ namespace EmployeeManagement.Controllers
 
             await _context.Entry(task).Reference(t => t.Project).LoadAsync();
             await _context.Entry(task).Reference(t => t.Description).LoadAsync();
+            await _context.Entry(task).Reference(t => t.RequiredSkill).LoadAsync();
 
-            var resultDto = new TaskItemDto
-            {
-                ProjectId = task.ProjectId,
-                TaskId = task.TaskId,
-                TaskName = task.TaskName,
-                EstimatedHours = task.EstimatedHours,
-                DescriptionId = task.DescriptionId,
-                Project = task.Project != null ? new ProjectDto { ProjectId = task.Project.ProjectId, ProjectName = task.Project.ProjectName } : null,
-                Description = task.Description != null ? new TaskDescriptionDto { DescriptionId = task.Description.DescriptionId, TaskDescriptionText = task.Description.TaskDescriptionText } : null
-            };
+            var resultDto = ToDto(task);
 
             return CreatedAtAction(nameof(GetById), new { projectId = task.ProjectId, taskId = task.TaskId }, resultDto);
         }
@@ -171,10 +222,13 @@ namespace EmployeeManagement.Controllers
             var descriptionExists = await _context.Descriptions.AnyAsync(d => d.DescriptionId == dto.DescriptionId);
             if (!descriptionExists)
                 return BadRequest("Task description does not exist");
+            if (!string.IsNullOrWhiteSpace(dto.RequiredSkillId) && !await _context.Skills.AnyAsync(s => s.SkillId == dto.RequiredSkillId))
+                return BadRequest("Required skill does not exist");
 
             task.TaskName = dto.TaskName;
             task.EstimatedHours = dto.EstimatedHours;
             task.DescriptionId = dto.DescriptionId;
+            task.RequiredSkillId = string.IsNullOrWhiteSpace(dto.RequiredSkillId) ? null : dto.RequiredSkillId;
 
             await _context.SaveChangesAsync();
 
@@ -210,6 +264,13 @@ namespace EmployeeManagement.Controllers
             {
                 DescriptionId = task.Description.DescriptionId,
                 TaskDescriptionText = task.Description.TaskDescriptionText
+            } : null,
+            RequiredSkillId = task.RequiredSkillId,
+            RequiredSkill = task.RequiredSkill != null ? new SkillDto
+            {
+                SkillId = task.RequiredSkill.SkillId,
+                SkillName = task.RequiredSkill.SkillName,
+                SkillLevel = task.RequiredSkill.SkillLevel
             } : null
         };
     }
