@@ -11,12 +11,26 @@ GO
 
 UPDATE [Account]
 SET [Role] = 'Admin'
-WHERE LOWER([Username]) = 'admin';
+WHERE [AccountId] = 'ACC001'
+   OR LOWER([Username]) LIKE '%admin%';
+GO
+
+UPDATE a
+SET a.[Role] = 'Manager'
+FROM [Account] a
+JOIN [Employee] e ON e.[AccountId] = a.[AccountId]
+WHERE a.[Role] <> 'Admin'
+  AND EXISTS (
+      SELECT 1
+      FROM [ProjectManager] pm
+      WHERE pm.[EmployeeId] = e.[EmployeeId]
+  );
 GO
 
 UPDATE [Account]
 SET [Role] = 'Employee'
-WHERE [Role] IS NULL OR [Role] NOT IN ('Admin', 'Manager', 'Employee');
+WHERE [Role] IS NULL
+   OR [Role] NOT IN ('Admin', 'Manager', 'Employee');
 GO
 
 IF OBJECT_ID('CK_Account_Role', 'C') IS NULL
