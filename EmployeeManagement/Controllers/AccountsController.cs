@@ -4,29 +4,40 @@ using EmployeeManagement.Data;
 using EmployeeManagement.Entities;
 using EmployeeManagement.DTOs;
 using EmployeeManagement.Services;
+using Microsoft.AspNetCore.Authorization;
 
 namespace EmployeeManagement.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [Authorize(Roles = RoleNames.Admin)]
     public class AccountsController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly IPasswordService _passwordService;
 
-        public AccountsController(AppDbContext context)
+        public AccountsController(AppDbContext context, IPasswordService passwordService)
         {
             _context = context;
+            _passwordService = passwordService;
         }
 
         [HttpGet]
         public async Task<ActionResult<IEnumerable<AccountDto>>> GetAll()
         {
-            var accounts = await _context.Accounts.AsNoTracking().ToListAsync();
-            var dtos = accounts.Select(a => new AccountDto
+            var accounts = await _context.Accounts.AsNoTracking().OrderBy(a => a.Username).ToListAsync();
+            var employees = await _context.Employees.AsNoTracking().ToDictionaryAsync(e => e.AccountId);
+            var dtos = accounts.Select(a =>
             {
-                AccountId = a.AccountId,
-                Username = a.Username,
-                Role = RoleNames.Normalize(a.Role)
+                employees.TryGetValue(a.AccountId, out var employee);
+                return new AccountDto
+                {
+                    AccountId = a.AccountId,
+                    Username = a.Username,
+                    Role = RoleNames.Normalize(a.Role),
+                    EmployeeId = employee?.EmployeeId,
+                    EmployeeName = employee == null ? null : employee.FirstName + " " + employee.LastName
+                };
             }).ToList();
             return Ok(dtos);
         }
@@ -34,15 +45,18 @@ namespace EmployeeManagement.Controllers
         [HttpGet("{id}")]
         public async Task<ActionResult<AccountDto>> GetById(string id)
         {
-            var account = await _context.Accounts.FindAsync(id);
+            var account = await _context.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.AccountId == id);
             if (account == null)
                 return NotFound("Account was not found.");
 
+            var employee = await _context.Employees.AsNoTracking().FirstOrDefaultAsync(e => e.AccountId == id);
             return Ok(new AccountDto
             {
                 AccountId = account.AccountId,
                 Username = account.Username,
-                Role = RoleNames.Normalize(account.Role)
+                Role = RoleNames.Normalize(account.Role),
+                EmployeeId = employee?.EmployeeId,
+                EmployeeName = employee == null ? null : employee.FirstName + " " + employee.LastName
             });
         }
 
@@ -54,6 +68,8 @@ namespace EmployeeManagement.Controllers
 
             if (!RoleNames.IsValid(dto.Role))
                 return BadRequest("Role must be Admin, Manager or Employee.");
+            if (dto.Password.Length < 8)
+                return BadRequest("Password must contain at least 8 characters.");
 
             var accountIdExists = await _context.Accounts.AnyAsync(a => a.AccountId == dto.AccountId);
             if (accountIdExists)
@@ -67,7 +83,7 @@ namespace EmployeeManagement.Controllers
             {
                 AccountId = dto.AccountId,
                 Username = dto.Username,
-                Password = dto.Password,
+                Password = _passwordService.HashPassword(dto.Password),
                 Role = RoleNames.Normalize(dto.Role)
             };
 
@@ -91,6 +107,8 @@ namespace EmployeeManagement.Controllers
 
             if (!RoleNames.IsValid(dto.Role))
                 return BadRequest("Role must be Admin, Manager or Employee.");
+            if (!string.IsNullOrWhiteSpace(dto.Password) && dto.Password.Length < 8)
+                return BadRequest("Password must contain at least 8 characters.");
 
             var account = await _context.Accounts.FindAsync(id);
             if (account == null)
@@ -103,7 +121,7 @@ namespace EmployeeManagement.Controllers
             account.Username = dto.Username;
             account.Role = RoleNames.Normalize(dto.Role);
             if (!string.IsNullOrWhiteSpace(dto.Password))
-                account.Password = dto.Password;
+                account.Password = _passwordService.HashPassword(dto.Password);
 
             await _context.SaveChangesAsync();
             return NoContent();

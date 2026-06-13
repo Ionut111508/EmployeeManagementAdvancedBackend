@@ -15,52 +15,20 @@ public class UserRoleService : IUserRoleService
 
     public async Task<string> GetRoleForEmployeeAsync(string employeeId, string username)
     {
-        if (IsAdminUsername(username))
-            return RoleNames.Admin;
-
         var accountId = await _context.Employees
             .AsNoTracking()
             .Where(e => e.EmployeeId == employeeId)
             .Select(e => e.AccountId)
             .FirstOrDefaultAsync();
 
-        if (!string.IsNullOrWhiteSpace(accountId))
-        {
-            var accountRole = await ReadAccountRoleAsync(accountId);
-            if (accountRole == RoleNames.Admin || accountRole == RoleNames.Manager)
-                return accountRole;
-        }
-
-        var isManager = await _context.ProjectManagers
-            .AsNoTracking()
-            .AnyAsync(pm => pm.EmployeeId == employeeId);
-
-        return isManager ? RoleNames.Manager : RoleNames.Employee;
+        return string.IsNullOrWhiteSpace(accountId)
+            ? RoleNames.Employee
+            : RoleNames.Normalize(await ReadAccountRoleAsync(accountId));
     }
 
     public async Task<string> GetRoleForAccountAsync(string accountId, string username)
     {
-        if (IsAdminUsername(username))
-            return RoleNames.Admin;
-
-        var accountRole = await ReadAccountRoleAsync(accountId);
-        if (accountRole == RoleNames.Admin || accountRole == RoleNames.Manager)
-            return accountRole;
-
-        var employeeId = await _context.Employees
-            .AsNoTracking()
-            .Where(e => e.AccountId == accountId)
-            .Select(e => e.EmployeeId)
-            .FirstOrDefaultAsync();
-
-        if (string.IsNullOrWhiteSpace(employeeId))
-            return RoleNames.Employee;
-
-        var isManager = await _context.ProjectManagers
-            .AsNoTracking()
-            .AnyAsync(pm => pm.EmployeeId == employeeId);
-
-        return isManager ? RoleNames.Manager : RoleNames.Employee;
+        return RoleNames.Normalize(await ReadAccountRoleAsync(accountId));
     }
 
     public IReadOnlyList<string> GetPermissions(string role) => RoleNames.GetPermissions(role);
@@ -141,7 +109,4 @@ public class UserRoleService : IUserRoleService
             return null;
         }
     }
-
-    private static bool IsAdminUsername(string username) =>
-        string.Equals(username, RoleNames.Admin, StringComparison.OrdinalIgnoreCase);
 }

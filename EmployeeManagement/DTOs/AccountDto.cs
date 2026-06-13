@@ -5,6 +5,8 @@ namespace EmployeeManagement.DTOs
         public string AccountId { get; set; } = null!;
         public string Username { get; set; } = null!;
         public string Role { get; set; } = "Employee";
+        public string? EmployeeId { get; set; }
+        public string? EmployeeName { get; set; }
     }
 
     public class AccountCreateDto

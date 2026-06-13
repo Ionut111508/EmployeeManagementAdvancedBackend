@@ -26,12 +26,14 @@ public class LoginResponse
 
 public class LoginResponseDto
 {
+    public string Token { get; set; } = null!;
     public string AccountId { get; set; } = null!;
     public string Username { get; set; } = null!;
     public string EmployeeId { get; set; } = null!;
     public string FullName { get; set; } = null!;
     public string Role { get; set; } = null!;
     public IReadOnlyList<string> Permissions { get; set; } = Array.Empty<string>();
+    public DateTime ExpiresAt { get; set; }
 }
 
 public class UserAccessDto
