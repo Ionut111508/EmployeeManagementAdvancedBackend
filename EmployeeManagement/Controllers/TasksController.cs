@@ -4,6 +4,7 @@ using EmployeeManagement.Data;
 using EmployeeManagement.Entities;
 using EmployeeManagement.DTOs;
 using EmployeeManagement.Services;
+using Microsoft.AspNetCore.Authorization;
 
 namespace EmployeeManagement.Controllers
 {
@@ -23,6 +24,7 @@ namespace EmployeeManagement.Controllers
         }
 
         [HttpGet]
+        [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
         public async Task<ActionResult<IEnumerable<TaskItemDto>>> GetAll()
         {
             var tasks = await _context.TaskItems
@@ -86,6 +88,7 @@ namespace EmployeeManagement.Controllers
         }
 
         [HttpGet("staffing")]
+        [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
         public async Task<ActionResult<IEnumerable<TaskStaffingResponse>>> GetStaffing([FromQuery] DateTime startDate, [FromQuery] DateTime? endDate, [FromQuery] string? projectId, [FromQuery] decimal hoursPerDay = 1)
         {
             if (startDate == default)
@@ -97,6 +100,17 @@ namespace EmployeeManagement.Controllers
             if (hoursPerDay <= 0)
                 return BadRequest("HoursPerDay must be greater than zero.");
 
+            List<string>? managedProjectIds = null;
+            if (User.IsInRole(RoleNames.Manager))
+            {
+                var employeeId = User.FindFirst("employee_id")?.Value;
+                managedProjectIds = string.IsNullOrWhiteSpace(employeeId)
+                    ? new List<string>()
+                    : await _context.ProjectManagers.Where(pm => pm.EmployeeId == employeeId).Select(pm => pm.ProjectId).ToListAsync();
+                if (!string.IsNullOrWhiteSpace(projectId) && !managedProjectIds.Contains(projectId))
+                    return Forbid();
+            }
+
             var query = _context.TaskItems
                 .AsNoTracking()
                 .Include(t => t.Project)
@@ -106,6 +120,8 @@ namespace EmployeeManagement.Controllers
 
             if (!string.IsNullOrWhiteSpace(projectId))
                 query = query.Where(t => t.ProjectId == projectId);
+            else if (managedProjectIds != null)
+                query = query.Where(t => managedProjectIds.Contains(t.ProjectId));
 
             var tasks = await query
                 .OrderBy(t => t.ProjectId)
@@ -115,6 +131,8 @@ namespace EmployeeManagement.Controllers
             var result = new List<TaskStaffingResponse>();
             foreach (var task in tasks)
             {
+                var taskStart = task.PlannedStartDate?.Date ?? startDate.Date;
+                var taskEnd = task.PlannedEndDate?.Date ?? end;
                 var estimated = task.EstimatedHours ?? 0;
                 var allocated = task.Allocations.Sum(a => _allocationService.CalculateTotalAllocationHours(
                     a.AllocationStartDate,
@@ -127,8 +145,8 @@ namespace EmployeeManagement.Controllers
                     {
                         ProjectId = task.ProjectId,
                         SkillId = task.RequiredSkillId,
-                        StartDate = startDate.Date,
-                        EndDate = end,
+                        StartDate = taskStart,
+                        EndDate = taskEnd,
                         RequiredHoursPerDay = hoursPerDay
                     })).Where(c => c.CanTakeRequestedHours).Take(5).ToList();
 
@@ -141,6 +159,9 @@ namespace EmployeeManagement.Controllers
                     EstimatedHours = estimated,
                     AllocatedHours = allocated,
                     RemainingHours = remaining,
+                    PlannedStartDate = task.PlannedStartDate,
+                    PlannedEndDate = task.PlannedEndDate,
+                    AllocatedPeople = task.Allocations.Count,
                     RequiredSkillId = task.RequiredSkillId,
                     RequiredSkillName = task.RequiredSkill?.SkillName,
                     RequiredSkillLevel = task.RequiredSkill?.SkillLevel,
@@ -156,7 +177,138 @@ namespace EmployeeManagement.Controllers
             return Ok(result.OrderByDescending(x => x.RemainingHours).ThenBy(x => x.ProjectName).ThenBy(x => x.TaskName));
         }
 
+        [HttpPost("planning-preview")]
+        [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
+        public async Task<ActionResult<TaskPlanningPreviewResponse>> PreviewPlanning(TaskPlanningPreviewRequest request)
+        {
+            var validationError = ValidatePlanningRequest(request.ProjectId, request.EstimatedHours, request.PlannedStartDate, request.PlannedEndDate);
+            if (validationError != null)
+                return BadRequest(validationError);
+            if (!await _context.Projects.AnyAsync(project => project.ProjectId == request.ProjectId))
+                return BadRequest("Project does not exist.");
+            if (!await CanManageProjectAsync(request.ProjectId))
+                return Forbid();
+            if (!string.IsNullOrWhiteSpace(request.RequiredSkillId) && !await _context.Skills.AnyAsync(skill => skill.SkillId == request.RequiredSkillId))
+                return BadRequest("Required skill does not exist.");
+
+            return Ok(await _allocationService.BuildTaskPlanAsync(request));
+        }
+
+        [HttpPost("create-planned")]
+        [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
+        public async Task<ActionResult<CreatePlannedTaskResponse>> CreatePlanned(CreatePlannedTaskRequest request)
+        {
+            var validationError = ValidatePlanningRequest(request.ProjectId, request.EstimatedHours, request.PlannedStartDate, request.PlannedEndDate);
+            if (validationError != null)
+                return BadRequest(validationError);
+            if (string.IsNullOrWhiteSpace(request.TaskId) || string.IsNullOrWhiteSpace(request.TaskName) ||
+                string.IsNullOrWhiteSpace(request.DescriptionId) || string.IsNullOrWhiteSpace(request.DescriptionText))
+                return BadRequest("TaskId, TaskName, DescriptionId and DescriptionText are required.");
+            if (!string.Equals(request.AllocationMode, "Automatic", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(request.AllocationMode, "Manual", StringComparison.OrdinalIgnoreCase))
+                return BadRequest("AllocationMode must be Automatic or Manual.");
+            if (!await _context.Projects.AnyAsync(project => project.ProjectId == request.ProjectId))
+                return BadRequest("Project does not exist.");
+            if (!await CanManageProjectAsync(request.ProjectId))
+                return Forbid();
+            if (!string.IsNullOrWhiteSpace(request.RequiredSkillId) && !await _context.Skills.AnyAsync(skill => skill.SkillId == request.RequiredSkillId))
+                return BadRequest("Required skill does not exist.");
+            if (await _context.TaskItems.AnyAsync(task => task.ProjectId == request.ProjectId && task.TaskId == request.TaskId))
+                return BadRequest("Task with this ProjectId and TaskId combination already exists.");
+            if (await _context.Descriptions.AnyAsync(description => description.DescriptionId == request.DescriptionId))
+                return BadRequest("DescriptionId already exists.");
+            if (request.ManualAllocations.GroupBy(item => item.EmployeeId).Any(group => group.Count() > 1))
+                return BadRequest("An employee can only be allocated once to the same task.");
+
+            var preview = await _allocationService.BuildTaskPlanAsync(new TaskPlanningPreviewRequest
+            {
+                ProjectId = request.ProjectId,
+                EstimatedHours = request.EstimatedHours,
+                RequiredSkillId = request.RequiredSkillId,
+                PlannedStartDate = request.PlannedStartDate,
+                PlannedEndDate = request.PlannedEndDate
+            });
+
+            var plannedAllocations = string.Equals(request.AllocationMode, "Automatic", StringComparison.OrdinalIgnoreCase)
+                ? preview.AutomaticPlan.Select(item => new ManualTaskAllocationRequest
+                {
+                    EmployeeId = item.EmployeeId,
+                    HoursPerDay = item.HoursPerDay
+                }).ToList()
+                : request.ManualAllocations;
+
+            if (plannedAllocations.Any(item => string.IsNullOrWhiteSpace(item.EmployeeId) || item.HoursPerDay <= 0))
+                return BadRequest("Each manual allocation requires an employee and hours per day greater than zero.");
+
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                var description = new TaskDescription
+                {
+                    DescriptionId = request.DescriptionId,
+                    TaskDescriptionText = request.DescriptionText
+                };
+                var task = new TaskItem
+                {
+                    ProjectId = request.ProjectId,
+                    TaskId = request.TaskId,
+                    TaskName = request.TaskName,
+                    EstimatedHours = request.EstimatedHours,
+                    DescriptionId = request.DescriptionId,
+                    RequiredSkillId = string.IsNullOrWhiteSpace(request.RequiredSkillId) ? null : request.RequiredSkillId,
+                    PlannedStartDate = request.PlannedStartDate.Date,
+                    PlannedEndDate = request.PlannedEndDate.Date
+                };
+
+                _context.Descriptions.Add(description);
+                _context.TaskItems.Add(task);
+                await _context.SaveChangesAsync();
+
+                var createdAllocations = new List<AllocationResponse>();
+                foreach (var planned in plannedAllocations)
+                {
+                    var allocationResult = await _allocationService.CreateAllocationAsync(new CreateAllocationRequest
+                    {
+                        EmployeeId = planned.EmployeeId,
+                        ProjectId = request.ProjectId,
+                        TaskId = request.TaskId,
+                        AllocationStartDate = request.PlannedStartDate.Date,
+                        AllocationEndDate = request.PlannedEndDate.Date,
+                        AllocatedHours = planned.HoursPerDay
+                    });
+                    if (!allocationResult.Success || allocationResult.Allocation == null)
+                    {
+                        await transaction.RollbackAsync();
+                        return BadRequest(allocationResult.Error);
+                    }
+                    createdAllocations.Add(allocationResult.Allocation);
+                }
+
+                await transaction.CommitAsync();
+                await _context.Entry(task).Reference(item => item.Project).LoadAsync();
+                await _context.Entry(task).Reference(item => item.Description).LoadAsync();
+                await _context.Entry(task).Reference(item => item.RequiredSkill).LoadAsync();
+
+                var allocatedHours = createdAllocations.Sum(item => item.TotalAllocationHours);
+                var remainingHours = Math.Max(request.EstimatedHours - allocatedHours, 0);
+                return CreatedAtAction(nameof(GetById), new { projectId = task.ProjectId, taskId = task.TaskId }, new CreatePlannedTaskResponse
+                {
+                    Task = ToDto(task),
+                    Allocations = createdAllocations,
+                    AllocatedHours = allocatedHours,
+                    RemainingHours = remainingHours,
+                    StaffingStatus = remainingHours <= 0.05m ? "Fully staffed" : createdAllocations.Count == 0 ? "Unstaffed" : "Partially staffed"
+                });
+            }
+            catch (DbUpdateException)
+            {
+                await transaction.RollbackAsync();
+                return BadRequest("The task, description or allocation conflicts with existing data.");
+            }
+        }
+
         [HttpPost]
+        [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
         public async Task<ActionResult<TaskItemDto>> Create(TaskItemCreateDto dto)
         {
             if (string.IsNullOrWhiteSpace(dto.ProjectId) ||
@@ -169,6 +321,10 @@ namespace EmployeeManagement.Controllers
             var projectExists = await _context.Projects.AnyAsync(p => p.ProjectId == dto.ProjectId);
             if (!projectExists)
                 return BadRequest("Project does not exist");
+            if (!await CanManageProjectAsync(dto.ProjectId))
+                return Forbid();
+            if (dto.PlannedStartDate.HasValue && dto.PlannedEndDate.HasValue && dto.PlannedStartDate.Value.Date > dto.PlannedEndDate.Value.Date)
+                return BadRequest("PlannedEndDate cannot be before PlannedStartDate.");
 
             var descriptionExists = await _context.Descriptions.AnyAsync(d => d.DescriptionId == dto.DescriptionId);
             if (!descriptionExists)
@@ -183,7 +339,9 @@ namespace EmployeeManagement.Controllers
                 TaskName = dto.TaskName,
                 EstimatedHours = dto.EstimatedHours,
                 DescriptionId = dto.DescriptionId,
-                RequiredSkillId = string.IsNullOrWhiteSpace(dto.RequiredSkillId) ? null : dto.RequiredSkillId
+                RequiredSkillId = string.IsNullOrWhiteSpace(dto.RequiredSkillId) ? null : dto.RequiredSkillId,
+                PlannedStartDate = dto.PlannedStartDate?.Date,
+                PlannedEndDate = dto.PlannedEndDate?.Date
             };
 
             _context.TaskItems.Add(task);
@@ -208,6 +366,7 @@ namespace EmployeeManagement.Controllers
         }
 
         [HttpPut("{projectId}/{taskId}")]
+        [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
         public async Task<IActionResult> Update(string projectId, string taskId, TaskItemUpdateDto dto)
         {
             if (string.IsNullOrWhiteSpace(dto.TaskName) ||
@@ -218,6 +377,10 @@ namespace EmployeeManagement.Controllers
             var task = await _context.TaskItems.FirstOrDefaultAsync(t => t.ProjectId == projectId && t.TaskId == taskId);
             if (task == null)
                 return NotFound();
+            if (!await CanManageProjectAsync(projectId))
+                return Forbid();
+            if (dto.PlannedStartDate.HasValue && dto.PlannedEndDate.HasValue && dto.PlannedStartDate.Value.Date > dto.PlannedEndDate.Value.Date)
+                return BadRequest("PlannedEndDate cannot be before PlannedStartDate.");
 
             var descriptionExists = await _context.Descriptions.AnyAsync(d => d.DescriptionId == dto.DescriptionId);
             if (!descriptionExists)
@@ -229,6 +392,8 @@ namespace EmployeeManagement.Controllers
             task.EstimatedHours = dto.EstimatedHours;
             task.DescriptionId = dto.DescriptionId;
             task.RequiredSkillId = string.IsNullOrWhiteSpace(dto.RequiredSkillId) ? null : dto.RequiredSkillId;
+            task.PlannedStartDate = dto.PlannedStartDate?.Date;
+            task.PlannedEndDate = dto.PlannedEndDate?.Date;
 
             await _context.SaveChangesAsync();
 
@@ -236,11 +401,14 @@ namespace EmployeeManagement.Controllers
         }
 
         [HttpDelete("{projectId}/{taskId}")]
+        [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
         public async Task<IActionResult> Delete(string projectId, string taskId)
         {
             var task = await _context.TaskItems.FirstOrDefaultAsync(t => t.ProjectId == projectId && t.TaskId == taskId);
             if (task == null)
                 return NotFound();
+            if (!await CanManageProjectAsync(projectId))
+                return Forbid();
 
             _context.TaskItems.Remove(task);
             await _context.SaveChangesAsync();
@@ -266,6 +434,8 @@ namespace EmployeeManagement.Controllers
                 TaskDescriptionText = task.Description.TaskDescriptionText
             } : null,
             RequiredSkillId = task.RequiredSkillId,
+            PlannedStartDate = task.PlannedStartDate,
+            PlannedEndDate = task.PlannedEndDate,
             RequiredSkill = task.RequiredSkill != null ? new SkillDto
             {
                 SkillId = task.RequiredSkill.SkillId,
@@ -273,5 +443,31 @@ namespace EmployeeManagement.Controllers
                 SkillLevel = task.RequiredSkill.SkillLevel
             } : null
         };
+
+        private async Task<bool> CanManageProjectAsync(string projectId)
+        {
+            if (User.IsInRole(RoleNames.Admin))
+                return true;
+
+            var employeeId = User.FindFirst("employee_id")?.Value;
+            return User.IsInRole(RoleNames.Manager) &&
+                !string.IsNullOrWhiteSpace(employeeId) &&
+                await _context.ProjectManagers.AnyAsync(pm => pm.EmployeeId == employeeId && pm.ProjectId == projectId);
+        }
+
+        private string? ValidatePlanningRequest(string projectId, decimal estimatedHours, DateTime startDate, DateTime endDate)
+        {
+            if (string.IsNullOrWhiteSpace(projectId))
+                return "ProjectId is required.";
+            if (estimatedHours <= 0)
+                return "EstimatedHours must be greater than zero.";
+            if (startDate == default || endDate == default)
+                return "PlannedStartDate and PlannedEndDate are required.";
+            if (startDate.Date > endDate.Date)
+                return "PlannedEndDate cannot be before PlannedStartDate.";
+            if (_allocationService.CountWorkingDays(startDate, endDate) == 0)
+                return "The planned interval must contain at least one working day.";
+            return null;
+        }
     }
 }

@@ -8,6 +8,8 @@ namespace EmployeeManagement.DTOs
         public decimal? EstimatedHours { get; set; }
         public string? DescriptionId { get; set; }
         public string? RequiredSkillId { get; set; }
+        public DateTime? PlannedStartDate { get; set; }
+        public DateTime? PlannedEndDate { get; set; }
         public ProjectDto? Project { get; set; }
         public TaskDescriptionDto? Description { get; set; }
         public SkillDto? RequiredSkill { get; set; }
@@ -21,6 +23,8 @@ namespace EmployeeManagement.DTOs
         public decimal? EstimatedHours { get; set; }
         public string? DescriptionId { get; set; }
         public string? RequiredSkillId { get; set; }
+        public DateTime? PlannedStartDate { get; set; }
+        public DateTime? PlannedEndDate { get; set; }
     }
 
     public class TaskItemUpdateDto
@@ -29,5 +33,7 @@ namespace EmployeeManagement.DTOs
         public decimal? EstimatedHours { get; set; }
         public string? DescriptionId { get; set; }
         public string? RequiredSkillId { get; set; }
+        public DateTime? PlannedStartDate { get; set; }
+        public DateTime? PlannedEndDate { get; set; }
     }
 }

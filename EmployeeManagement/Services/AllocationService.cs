@@ -172,6 +172,97 @@ public class AllocationService : IAllocationService
             .ToList();
     }
 
+    public async Task<TaskPlanningPreviewResponse> BuildTaskPlanAsync(TaskPlanningPreviewRequest request)
+    {
+        var startDate = request.PlannedStartDate.Date;
+        var endDate = request.PlannedEndDate.Date;
+        var workingDays = CountWorkingDays(startDate, endDate);
+        var availability = await GetAvailabilityAsync(new AllocationAvailabilityRequest
+        {
+            ProjectId = request.ProjectId,
+            SkillId = request.RequiredSkillId,
+            StartDate = startDate,
+            EndDate = endDate
+        });
+
+        var candidates = availability.Select(item => new TaskPlanningCandidateResponse
+        {
+            EmployeeId = item.EmployeeId,
+            FullName = item.FullName,
+            ProjectId = item.ProjectId,
+            IsAssignedToProject = item.IsAssignedToProject,
+            IsProjectManager = item.IsProjectManager,
+            WorkNormHoursPerDay = item.WorkNormHoursPerDay,
+            WorkingDays = item.WorkingDays,
+            CapacityHours = item.CapacityHours,
+            ExistingAllocatedHours = item.ExistingAllocatedHours,
+            AvailableHours = item.AvailableHours,
+            MinimumDailyAvailableHours = item.MinimumDailyAvailableHours,
+            IsOnLeave = item.IsOnLeave,
+            MeetsSkillRequirement = item.MeetsSkillRequirement,
+            RequiredSkillId = item.RequiredSkillId,
+            RequiredSkillName = item.RequiredSkillName,
+            RequiredSkillLevel = item.RequiredSkillLevel,
+            MatchedSkillId = item.MatchedSkillId,
+            MatchedSkillName = item.MatchedSkillName,
+            MatchedSkillLevel = item.MatchedSkillLevel,
+            CanTakeRequestedHours = item.CanTakeRequestedHours,
+            Status = item.Status,
+            MaxAssignableHours = item.MeetsSkillRequirement && !item.IsOnLeave
+                ? workingDays * item.MinimumDailyAvailableHours
+                : 0
+        }).ToList();
+
+        var eligible = candidates
+            .Where(item => item.MaxAssignableHours > 0 && !request.ExcludedEmployeeIds.Contains(item.EmployeeId))
+            .OrderByDescending(item => item.IsAssignedToProject)
+            .ThenBy(item => item.ExistingAllocatedHours)
+            .ThenByDescending(item => item.MinimumDailyAvailableHours)
+            .ThenBy(item => item.FullName)
+            .ToList();
+
+        var remaining = Math.Max(request.EstimatedHours, 0);
+        var automaticPlan = new List<PlannedAllocationResponse>();
+        foreach (var candidate in eligible)
+        {
+            if (remaining <= 0.01m || workingDays == 0)
+                break;
+
+            var requestedFromEmployee = Math.Min(remaining, candidate.MaxAssignableHours);
+            var hoursPerDay = Math.Floor(requestedFromEmployee / workingDays * 100m) / 100m;
+            if (hoursPerDay <= 0)
+                continue;
+
+            var totalHours = hoursPerDay * workingDays;
+            automaticPlan.Add(new PlannedAllocationResponse
+            {
+                EmployeeId = candidate.EmployeeId,
+                EmployeeName = candidate.FullName,
+                HoursPerDay = hoursPerDay,
+                TotalHours = totalHours
+            });
+            remaining = Math.Max(remaining - totalHours, 0);
+        }
+
+        return new TaskPlanningPreviewResponse
+        {
+            PlannedStartDate = startDate,
+            PlannedEndDate = endDate,
+            WorkingDays = workingDays,
+            EstimatedHours = request.EstimatedHours,
+            SafeAvailableHours = eligible.Sum(item => item.MaxAssignableHours),
+            RemainingUncoveredHours = remaining,
+            CanFullyStaff = remaining <= 0.05m,
+            Candidates = candidates
+                .OrderByDescending(item => item.MaxAssignableHours > 0)
+                .ThenByDescending(item => item.IsAssignedToProject)
+                .ThenByDescending(item => item.MaxAssignableHours)
+                .ThenBy(item => item.FullName)
+                .ToList(),
+            AutomaticPlan = automaticPlan
+        };
+    }
+
     public async Task<AllocationSimulationResponse> SimulateAllocationAsync(AllocationSimulationRequest request)
     {
         var startDate = request.StartDate.Date;

@@ -8,6 +8,8 @@ namespace EmployeeManagement.Entities
         public decimal? EstimatedHours { get; set; }
         public string DescriptionId { get; set; } = null!;
         public string? RequiredSkillId { get; set; }
+        public DateTime? PlannedStartDate { get; set; }
+        public DateTime? PlannedEndDate { get; set; }
 
         public Project? Project { get; set; }
         public TaskDescription? Description { get; set; }

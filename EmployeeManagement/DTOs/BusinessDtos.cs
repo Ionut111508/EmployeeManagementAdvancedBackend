@@ -103,6 +103,9 @@ public class TaskStaffingResponse
     public decimal EstimatedHours { get; set; }
     public decimal AllocatedHours { get; set; }
     public decimal RemainingHours { get; set; }
+    public DateTime? PlannedStartDate { get; set; }
+    public DateTime? PlannedEndDate { get; set; }
+    public int AllocatedPeople { get; set; }
     public string? RequiredSkillId { get; set; }
     public string? RequiredSkillName { get; set; }
     public string? RequiredSkillLevel { get; set; }
