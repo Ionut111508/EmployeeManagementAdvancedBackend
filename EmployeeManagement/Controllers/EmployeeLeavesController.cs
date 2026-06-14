@@ -4,6 +4,7 @@ using EmployeeManagement.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authorization;
 
 namespace EmployeeManagement.Controllers;
 
@@ -13,11 +14,13 @@ public class EmployeeLeavesController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly IAllocationService _allocationService;
+    private readonly IAccessScopeService _accessScope;
 
-    public EmployeeLeavesController(AppDbContext context, IAllocationService allocationService)
+    public EmployeeLeavesController(AppDbContext context, IAllocationService allocationService, IAccessScopeService accessScope)
     {
         _context = context;
         _allocationService = allocationService;
+        _accessScope = accessScope;
     }
 
     [HttpGet]
@@ -45,7 +48,16 @@ ORDER BY l.StartDate";
         {
             return Ok(result);
         }
-        return Ok(result);
+        if (User.IsInRole(RoleNames.Admin))
+            return Ok(result);
+
+        var visible = new List<EmployeeLeaveDto>();
+        foreach (var leave in result)
+        {
+            if (await _accessScope.CanViewEmployeeAsync(User, leave.EmployeeId))
+                visible.Add(leave);
+        }
+        return Ok(visible);
     }
 
     [HttpPost]
@@ -55,6 +67,11 @@ ORDER BY l.StartDate";
             return BadRequest("EmployeeLeave table does not exist in the database. Run the employee leave SQL migration before creating leaves.");
 
         if (string.IsNullOrWhiteSpace(dto.EmployeeId)) return BadRequest("Employee is required.");
+        var currentEmployeeId = _accessScope.GetCurrentEmployeeId(User);
+        var canCreate = User.IsInRole(RoleNames.Admin) ||
+            (User.IsInRole(RoleNames.Manager) && await _accessScope.CanManageEmployeeAsync(User, dto.EmployeeId)) ||
+            (User.IsInRole(RoleNames.Employee) && currentEmployeeId == dto.EmployeeId);
+        if (!canCreate) return Forbid();
         if (dto.StartDate.Date > dto.EndDate.Date) return BadRequest("End date cannot be before start date.");
         if (!await _context.Employees.AnyAsync(e => e.EmployeeId == dto.EmployeeId)) return BadRequest("Employee does not exist.");
         if (!string.IsNullOrWhiteSpace(dto.ReplacementEmployeeId) && !await _context.Employees.AnyAsync(e => e.EmployeeId == dto.ReplacementEmployeeId)) return BadRequest("Replacement employee does not exist.");
@@ -95,6 +112,7 @@ END";
     }
 
     [HttpGet("{leaveId}/impact")]
+    [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
     public async Task<IActionResult> GetImpact(string leaveId)
     {
         var plan = await BuildLeavePlanAsync(leaveId);
@@ -102,6 +120,7 @@ END";
     }
 
     [HttpGet("{leaveId}/plan")]
+    [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
     public async Task<IActionResult> GetPlan(string leaveId)
     {
         var plan = await BuildLeavePlanAsync(leaveId);

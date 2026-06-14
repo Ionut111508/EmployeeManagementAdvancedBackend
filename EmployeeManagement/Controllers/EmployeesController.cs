@@ -4,6 +4,7 @@ using EmployeeManagement.Data;
 using EmployeeManagement.Entities;
 using EmployeeManagement.DTOs;
 using EmployeeManagement.Services;
+using Microsoft.AspNetCore.Authorization;
 
 namespace EmployeeManagement.Controllers
 {
@@ -13,14 +14,17 @@ namespace EmployeeManagement.Controllers
     {
         private readonly AppDbContext _context;
         private readonly IUserRoleService _userRoleService;
+        private readonly IAccessScopeService _accessScope;
 
-        public EmployeesController(AppDbContext context, IUserRoleService userRoleService)
+        public EmployeesController(AppDbContext context, IUserRoleService userRoleService, IAccessScopeService accessScope)
         {
             _context = context;
             _userRoleService = userRoleService;
+            _accessScope = accessScope;
         }
 
         [HttpGet]
+        [Authorize(Roles = RoleNames.Admin)]
         public async Task<ActionResult<IEnumerable<EmployeeDto>>> GetAll()
         {
             var employees = await _context.Employees
@@ -47,6 +51,9 @@ namespace EmployeeManagement.Controllers
         [HttpGet("visible-to/{viewerEmployeeId}")]
         public async Task<ActionResult<IEnumerable<EmployeeDto>>> GetVisibleTo(string viewerEmployeeId)
         {
+            if (!await _accessScope.CanUseViewerIdAsync(User, viewerEmployeeId))
+                return Forbid();
+
             var access = await _userRoleService.GetAccessForEmployeeAsync(viewerEmployeeId);
             if (access == null)
                 return NotFound("Viewer employee was not found.");
@@ -74,12 +81,17 @@ namespace EmployeeManagement.Controllers
                 .ThenBy(e => e.LastName)
                 .ToListAsync();
 
-            return Ok(employees.Select(ToDto).ToList());
+            return Ok(employees.Select(employee => ToDto(
+                employee,
+                User.IsInRole(RoleNames.Admin) || employee.EmployeeId == viewerEmployeeId)).ToList());
         }
 
         [HttpGet("{id}")]
         public async Task<ActionResult<EmployeeDto>> GetById(string id)
         {
+            if (!await _accessScope.CanViewEmployeeAsync(User, id))
+                return Forbid();
+
             var employee = await _context.Employees
                 .Include(e => e.Account)
                 .Include(e => e.WorkNorm)
@@ -97,7 +109,9 @@ namespace EmployeeManagement.Controllers
                 PhoneNumber = employee.PhoneNumber,
                 AccountId = employee.AccountId,
                 WorkNormId = employee.WorkNormId,
-                Account = employee.Account != null ? new AccountDto { AccountId = employee.Account.AccountId, Username = employee.Account.Username, Role = RoleNames.Normalize(employee.Account.Role) } : null,
+                Account = employee.Account != null && (User.IsInRole(RoleNames.Admin) || employee.EmployeeId == _accessScope.GetCurrentEmployeeId(User))
+                    ? new AccountDto { AccountId = employee.Account.AccountId, Username = employee.Account.Username, Role = RoleNames.Normalize(employee.Account.Role) }
+                    : null,
                 WorkNorm = employee.WorkNorm != null ? new WorkNormDto { WorkNormId = employee.WorkNorm.WorkNormId, WorkNormName = employee.WorkNorm.WorkNormName, WorkHours = employee.WorkNorm.WorkHours } : null
             };
 
@@ -105,6 +119,7 @@ namespace EmployeeManagement.Controllers
         }
 
         [HttpPost]
+        [Authorize(Roles = RoleNames.Admin)]
         public async Task<ActionResult<EmployeeDto>> Create(EmployeeCreateDto dto)
         {
             if (string.IsNullOrWhiteSpace(dto.EmployeeId) ||
@@ -166,6 +181,7 @@ namespace EmployeeManagement.Controllers
         }
 
         [HttpPut("{id}")]
+        [Authorize(Roles = RoleNames.Admin)]
         public async Task<IActionResult> Update(string id, EmployeeUpdateDto dto)
         {
             if (string.IsNullOrWhiteSpace(dto.LastName) ||
@@ -204,6 +220,7 @@ namespace EmployeeManagement.Controllers
         }
 
         [HttpDelete("{id}")]
+        [Authorize(Roles = RoleNames.Admin)]
         public async Task<IActionResult> Delete(string id)
         {
             var employee = await _context.Employees.FindAsync(id);
@@ -219,7 +236,7 @@ namespace EmployeeManagement.Controllers
             return NoContent();
         }
 
-        private static EmployeeDto ToDto(Employee e) => new()
+        private static EmployeeDto ToDto(Employee e, bool includeAccount = true) => new()
         {
             EmployeeId = e.EmployeeId,
             LastName = e.LastName,
@@ -228,7 +245,7 @@ namespace EmployeeManagement.Controllers
             PhoneNumber = e.PhoneNumber,
             AccountId = e.AccountId,
             WorkNormId = e.WorkNormId,
-            Account = e.Account != null ? new AccountDto
+            Account = includeAccount && e.Account != null ? new AccountDto
             {
                 AccountId = e.Account.AccountId,
                 Username = e.Account.Username,

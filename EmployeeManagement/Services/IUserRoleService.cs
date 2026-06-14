@@ -9,4 +9,5 @@ public interface IUserRoleService
     IReadOnlyList<string> GetPermissions(string role);
     Task<UserAccessDto?> GetAccessForEmployeeAsync(string employeeId);
     Task<List<EmployeeRoleDto>> GetEmployeeRolesAsync();
+    Task<EmployeeRoleUpdateResult> UpdateEmployeeRoleAsync(string employeeId, UpdateEmployeeRoleDto request);
 }

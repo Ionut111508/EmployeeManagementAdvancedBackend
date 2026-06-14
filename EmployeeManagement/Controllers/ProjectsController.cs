@@ -4,6 +4,7 @@ using EmployeeManagement.Data;
 using EmployeeManagement.Entities;
 using EmployeeManagement.DTOs;
 using EmployeeManagement.Services;
+using Microsoft.AspNetCore.Authorization;
 
 namespace EmployeeManagement.Controllers
 {
@@ -13,14 +14,17 @@ namespace EmployeeManagement.Controllers
     {
         private readonly AppDbContext _context;
         private readonly IUserRoleService _userRoleService;
+        private readonly IAccessScopeService _accessScope;
 
-        public ProjectsController(AppDbContext context, IUserRoleService userRoleService)
+        public ProjectsController(AppDbContext context, IUserRoleService userRoleService, IAccessScopeService accessScope)
         {
             _context = context;
             _userRoleService = userRoleService;
+            _accessScope = accessScope;
         }
 
         [HttpGet]
+        [Authorize(Roles = RoleNames.Admin)]
         public async Task<ActionResult<IEnumerable<ProjectDto>>> GetAll()
         {
             var projects = await _context.Projects.ToListAsync();
@@ -31,6 +35,9 @@ namespace EmployeeManagement.Controllers
         [HttpGet("visible-to/{viewerEmployeeId}")]
         public async Task<ActionResult<IEnumerable<ProjectDto>>> GetVisibleTo(string viewerEmployeeId)
         {
+            if (!await _accessScope.CanUseViewerIdAsync(User, viewerEmployeeId))
+                return Forbid();
+
             var access = await _userRoleService.GetAccessForEmployeeAsync(viewerEmployeeId);
             if (access == null)
                 return NotFound("Viewer employee was not found.");
@@ -63,6 +70,9 @@ namespace EmployeeManagement.Controllers
         [HttpGet("{id}")]
         public async Task<ActionResult<ProjectDto>> GetById(string id)
         {
+            if (!await _accessScope.CanViewProjectAsync(User, id))
+                return Forbid();
+
             var project = await _context.Projects.FindAsync(id);
             if (project == null)
                 return NotFound();
@@ -71,6 +81,7 @@ namespace EmployeeManagement.Controllers
         }
 
         [HttpPost]
+        [Authorize(Roles = RoleNames.Admin)]
         public async Task<ActionResult<ProjectDto>> Create(ProjectCreateDto dto)
         {
             if (string.IsNullOrWhiteSpace(dto.ProjectId) || string.IsNullOrWhiteSpace(dto.ProjectName))
@@ -99,8 +110,12 @@ namespace EmployeeManagement.Controllers
         }
 
         [HttpPut("{id}")]
+        [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
         public async Task<IActionResult> Update(string id, ProjectUpdateDto dto)
         {
+            if (!await _accessScope.CanManageProjectAsync(User, id))
+                return Forbid();
+
             if (string.IsNullOrWhiteSpace(dto.ProjectName))
                 return BadRequest("ProjectName is required");
 
@@ -115,6 +130,7 @@ namespace EmployeeManagement.Controllers
         }
 
         [HttpDelete("{id}")]
+        [Authorize(Roles = RoleNames.Admin)]
         public async Task<IActionResult> Delete(string id)
         {
             var project = await _context.Projects.FindAsync(id);

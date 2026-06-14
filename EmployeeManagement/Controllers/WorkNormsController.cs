@@ -3,6 +3,8 @@ using Microsoft.EntityFrameworkCore;
 using EmployeeManagement.Data;
 using EmployeeManagement.Entities;
 using EmployeeManagement.DTOs;
+using EmployeeManagement.Services;
+using Microsoft.AspNetCore.Authorization;
 
 namespace EmployeeManagement.Controllers
 {
@@ -36,6 +38,7 @@ namespace EmployeeManagement.Controllers
         }
 
         [HttpPost]
+        [Authorize(Roles = RoleNames.Admin)]
         public async Task<ActionResult<WorkNormDto>> Create(WorkNormCreateDto dto)
         {
             if (string.IsNullOrWhiteSpace(dto.WorkNormId) || string.IsNullOrWhiteSpace(dto.WorkNormName) || dto.WorkHours <= 0)
@@ -65,6 +68,7 @@ namespace EmployeeManagement.Controllers
         }
 
         [HttpPut("{id}")]
+        [Authorize(Roles = RoleNames.Admin)]
         public async Task<IActionResult> Update(string id, WorkNormUpdateDto dto)
         {
             if (string.IsNullOrWhiteSpace(dto.WorkNormName) || dto.WorkHours <= 0)
@@ -83,6 +87,7 @@ namespace EmployeeManagement.Controllers
         }
 
         [HttpDelete("{id}")]
+        [Authorize(Roles = RoleNames.Admin)]
         public async Task<IActionResult> Delete(string id)
         {
             var workNorm = await _context.WorkNorms.FindAsync(id);

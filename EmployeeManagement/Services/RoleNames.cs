@@ -49,6 +49,7 @@ public static class RoleNames
             "allocations.simulate",
             "availability.view",
             "employees.view.available",
+            "employees.manage.managed",
             "leaves.view.team",
             "timesheets.view.team"
         },

@@ -66,8 +66,6 @@ namespace EmployeeManagement.Controllers
             if (string.IsNullOrWhiteSpace(dto.AccountId) || string.IsNullOrWhiteSpace(dto.Username) || string.IsNullOrWhiteSpace(dto.Password))
                 return BadRequest("AccountId, Username and Password are required.");
 
-            if (!RoleNames.IsValid(dto.Role))
-                return BadRequest("Role must be Admin, Manager or Employee.");
             if (dto.Password.Length < 8)
                 return BadRequest("Password must contain at least 8 characters.");
 
@@ -84,7 +82,7 @@ namespace EmployeeManagement.Controllers
                 AccountId = dto.AccountId,
                 Username = dto.Username,
                 Password = _passwordService.HashPassword(dto.Password),
-                Role = RoleNames.Normalize(dto.Role)
+                Role = RoleNames.Employee
             };
 
             _context.Accounts.Add(account);
@@ -105,8 +103,6 @@ namespace EmployeeManagement.Controllers
             if (string.IsNullOrWhiteSpace(dto.Username))
                 return BadRequest("Username is required.");
 
-            if (!RoleNames.IsValid(dto.Role))
-                return BadRequest("Role must be Admin, Manager or Employee.");
             if (!string.IsNullOrWhiteSpace(dto.Password) && dto.Password.Length < 8)
                 return BadRequest("Password must contain at least 8 characters.");
 
@@ -118,8 +114,10 @@ namespace EmployeeManagement.Controllers
             if (usernameExists)
                 return BadRequest("Username is already used by another account.");
 
+            if (RoleNames.Normalize(dto.Role) != RoleNames.Normalize(account.Role))
+                return BadRequest("Use employee role management to change a linked account role.");
+
             account.Username = dto.Username;
-            account.Role = RoleNames.Normalize(dto.Role);
             if (!string.IsNullOrWhiteSpace(dto.Password))
                 account.Password = _passwordService.HashPassword(dto.Password);
 

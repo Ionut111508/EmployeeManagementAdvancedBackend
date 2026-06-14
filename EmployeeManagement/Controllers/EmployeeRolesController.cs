@@ -22,4 +22,11 @@ public class EmployeeRolesController : ControllerBase
     {
         return Ok(await _userRoleService.GetEmployeeRolesAsync());
     }
+
+    [HttpPut("{employeeId}")]
+    public async Task<ActionResult<EmployeeRoleDto>> Update(string employeeId, UpdateEmployeeRoleDto request)
+    {
+        var result = await _userRoleService.UpdateEmployeeRoleAsync(employeeId, request);
+        return result.Success ? Ok(result.EmployeeRole) : BadRequest(result.Error);
+    }
 }

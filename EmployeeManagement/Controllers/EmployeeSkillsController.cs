@@ -3,6 +3,8 @@ using EmployeeManagement.DTOs;
 using EmployeeManagement.Entities;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using EmployeeManagement.Services;
+using Microsoft.AspNetCore.Authorization;
 
 namespace EmployeeManagement.Controllers;
 
@@ -11,17 +13,31 @@ namespace EmployeeManagement.Controllers;
 public class EmployeeSkillsController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly IAccessScopeService _accessScope;
 
-    public EmployeeSkillsController(AppDbContext context)
+    public EmployeeSkillsController(AppDbContext context, IAccessScopeService accessScope)
     {
         _context = context;
+        _accessScope = accessScope;
     }
 
     [HttpGet]
     public async Task<IActionResult> GetAll()
     {
-        var result = await _context.EmployeeSkills
-            .AsNoTracking()
+        IQueryable<EmployeeSkill> query = _context.EmployeeSkills.AsNoTracking();
+        if (User.IsInRole(RoleNames.Employee))
+        {
+            var employeeId = _accessScope.GetCurrentEmployeeId(User);
+            query = query.Where(x => x.EmployeeId == employeeId);
+        }
+        else if (User.IsInRole(RoleNames.Manager))
+        {
+            var projectIds = await _accessScope.GetManagedProjectIdsAsync(User);
+            query = query.Where(x => _context.Allocations.Any(a => a.EmployeeId == x.EmployeeId && projectIds.Contains(a.ProjectId)) ||
+                _context.ProjectManagers.Any(pm => pm.EmployeeId == x.EmployeeId && projectIds.Contains(pm.ProjectId)));
+        }
+
+        var result = await query
             .Select(x => new EmployeeSkillResponse
             {
                 EmployeeId = x.EmployeeId,
@@ -51,6 +67,9 @@ public class EmployeeSkillsController : ControllerBase
     [HttpGet("employee/{employeeId}")]
     public async Task<IActionResult> GetByEmployee(string employeeId)
     {
+        if (!await _accessScope.CanViewEmployeeAsync(User, employeeId))
+            return Forbid();
+
         if (!await _context.Employees.AsNoTracking().AnyAsync(x => x.EmployeeId == employeeId))
             return NotFound("Employee not found.");
 
@@ -75,6 +94,7 @@ public class EmployeeSkillsController : ControllerBase
     }
 
     [HttpGet("skill/{skillId}")]
+    [Authorize(Roles = RoleNames.Admin)]
     public async Task<IActionResult> GetBySkill(string skillId)
     {
         if (!await _context.Skills.AsNoTracking().AnyAsync(x => x.SkillId == skillId))
@@ -111,8 +131,12 @@ public class EmployeeSkillsController : ControllerBase
     }
 
     [HttpPost]
+    [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
     public async Task<IActionResult> Create(EmployeeSkillRequest request)
     {
+        if (!await _accessScope.CanManageEmployeeAsync(User, request.EmployeeId))
+            return Forbid();
+
         if (string.IsNullOrWhiteSpace(request.EmployeeId) || string.IsNullOrWhiteSpace(request.SkillId))
             return BadRequest("EmployeeId and SkillId are required.");
 
@@ -147,8 +171,12 @@ public class EmployeeSkillsController : ControllerBase
     }
 
     [HttpDelete("{employeeId}/{skillId}")]
+    [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
     public async Task<IActionResult> Delete(string employeeId, string skillId)
     {
+        if (!await _accessScope.CanManageEmployeeAsync(User, employeeId))
+            return Forbid();
+
         var item = await _context.EmployeeSkills.FindAsync(employeeId, skillId);
         if (item == null)
             return NotFound("Employee skill assignment not found.");

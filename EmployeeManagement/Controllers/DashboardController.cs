@@ -12,16 +12,21 @@ public class DashboardController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly IAllocationService _allocationService;
+    private readonly IAccessScopeService _accessScope;
 
-    public DashboardController(AppDbContext context, IAllocationService allocationService)
+    public DashboardController(AppDbContext context, IAllocationService allocationService, IAccessScopeService accessScope)
     {
         _context = context;
         _allocationService = allocationService;
+        _accessScope = accessScope;
     }
 
     [HttpGet("employee/{employeeId}/workload")]
     public async Task<IActionResult> GetEmployeeWorkload(string employeeId)
     {
+        if (!await _accessScope.CanViewEmployeeAsync(User, employeeId))
+            return Forbid();
+
         var employee = await _context.Employees.Include(x => x.WorkNorm).FirstOrDefaultAsync(x => x.EmployeeId == employeeId);
         if (employee == null) return NotFound();
 
@@ -56,6 +61,9 @@ public class DashboardController : ControllerBase
     [HttpGet("task-progress/{projectId}/{taskId}")]
     public async Task<IActionResult> GetTaskProgress(string projectId, string taskId)
     {
+        if (!await _accessScope.CanViewTaskAsync(User, projectId, taskId))
+            return Forbid();
+
         var task = await _context.TaskItems.FirstOrDefaultAsync(x => x.ProjectId == projectId && x.TaskId == taskId);
         if (task == null) return NotFound();
 
@@ -80,6 +88,9 @@ public class DashboardController : ControllerBase
     [HttpGet("project/{projectId}/summary")]
     public async Task<IActionResult> GetProjectSummary(string projectId)
     {
+        if (!await _accessScope.CanViewProjectAsync(User, projectId))
+            return Forbid();
+
         var project = await _context.Projects.FirstOrDefaultAsync(x => x.ProjectId == projectId);
         if (project == null) return NotFound();
 

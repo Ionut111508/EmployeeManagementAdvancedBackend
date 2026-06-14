@@ -15,16 +15,18 @@ namespace EmployeeManagement.Controllers
         private readonly AppDbContext _context;
         private readonly IUserRoleService _userRoleService;
         private readonly IAllocationService _allocationService;
+        private readonly IAccessScopeService _accessScope;
 
-        public TasksController(AppDbContext context, IUserRoleService userRoleService, IAllocationService allocationService)
+        public TasksController(AppDbContext context, IUserRoleService userRoleService, IAllocationService allocationService, IAccessScopeService accessScope)
         {
             _context = context;
             _userRoleService = userRoleService;
             _allocationService = allocationService;
+            _accessScope = accessScope;
         }
 
         [HttpGet]
-        [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
+        [Authorize(Roles = RoleNames.Admin)]
         public async Task<ActionResult<IEnumerable<TaskItemDto>>> GetAll()
         {
             var tasks = await _context.TaskItems
@@ -41,6 +43,9 @@ namespace EmployeeManagement.Controllers
         [HttpGet("visible-to/{viewerEmployeeId}")]
         public async Task<ActionResult<IEnumerable<TaskItemDto>>> GetVisibleTo(string viewerEmployeeId)
         {
+            if (!await _accessScope.CanUseViewerIdAsync(User, viewerEmployeeId))
+                return Forbid();
+
             var access = await _userRoleService.GetAccessForEmployeeAsync(viewerEmployeeId);
             if (access == null)
                 return NotFound("Viewer employee was not found.");
@@ -75,6 +80,9 @@ namespace EmployeeManagement.Controllers
         [HttpGet("{projectId}/{taskId}")]
         public async Task<ActionResult<TaskItemDto>> GetById(string projectId, string taskId)
         {
+            if (!await _accessScope.CanViewTaskAsync(User, projectId, taskId))
+                return Forbid();
+
             var task = await _context.TaskItems
                 .Include(t => t.Project)
                 .Include(t => t.Description)
@@ -446,13 +454,7 @@ namespace EmployeeManagement.Controllers
 
         private async Task<bool> CanManageProjectAsync(string projectId)
         {
-            if (User.IsInRole(RoleNames.Admin))
-                return true;
-
-            var employeeId = User.FindFirst("employee_id")?.Value;
-            return User.IsInRole(RoleNames.Manager) &&
-                !string.IsNullOrWhiteSpace(employeeId) &&
-                await _context.ProjectManagers.AnyAsync(pm => pm.EmployeeId == employeeId && pm.ProjectId == projectId);
+            return await _accessScope.CanManageProjectAsync(User, projectId);
         }
 
         private string? ValidatePlanningRequest(string projectId, decimal estimatedHours, DateTime startDate, DateTime endDate)

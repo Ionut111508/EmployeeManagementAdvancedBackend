@@ -3,11 +3,14 @@ using EmployeeManagement.DTOs;
 using EmployeeManagement.Entities;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authorization;
+using EmployeeManagement.Services;
 
 namespace EmployeeManagement.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize(Roles = RoleNames.Admin)]
 public class ProjectManagersController : ControllerBase
 {
     private readonly AppDbContext _context;
@@ -40,7 +43,8 @@ public class ProjectManagersController : ControllerBase
         if (request.EndDate.HasValue && request.StartDate.HasValue && request.EndDate.Value < request.StartDate.Value)
             return BadRequest("EndDate cannot be before StartDate.");
 
-        if (!await _context.Employees.AnyAsync(x => x.EmployeeId == request.EmployeeId))
+        var employee = await _context.Employees.Include(x => x.Account).FirstOrDefaultAsync(x => x.EmployeeId == request.EmployeeId);
+        if (employee == null)
             return BadRequest("Selected employee does not exist.");
 
         if (!await _context.Projects.AnyAsync(x => x.ProjectId == request.ProjectId))
@@ -59,6 +63,8 @@ public class ProjectManagersController : ControllerBase
         };
 
         _context.ProjectManagers.Add(item);
+        if (employee.Account != null)
+            employee.Account.Role = RoleNames.Manager;
         await _context.SaveChangesAsync();
         return Ok(item);
     }
@@ -70,6 +76,17 @@ public class ProjectManagersController : ControllerBase
         if (item == null) return NotFound("Project manager assignment was not found.");
 
         _context.ProjectManagers.Remove(item);
+        var hasOtherProjects = await _context.ProjectManagers.AnyAsync(pm =>
+            pm.EmployeeId == employeeId && pm.ProjectId != projectId);
+        if (!hasOtherProjects)
+        {
+            var account = await _context.Employees
+                .Where(employee => employee.EmployeeId == employeeId)
+                .Select(employee => employee.Account)
+                .FirstOrDefaultAsync();
+            if (account != null && RoleNames.Normalize(account.Role) == RoleNames.Manager)
+                account.Role = RoleNames.Employee;
+        }
         await _context.SaveChangesAsync();
         return NoContent();
     }

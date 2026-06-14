@@ -13,28 +13,70 @@ public class AllocationsController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly IAllocationService _service;
+    private readonly IAccessScopeService _accessScope;
 
-    public AllocationsController(AppDbContext context, IAllocationService service)
+    public AllocationsController(AppDbContext context, IAllocationService service, IAccessScopeService accessScope)
     {
         _context = context;
         _service = service;
+        _accessScope = accessScope;
     }
 
     [HttpGet]
-    public async Task<IActionResult> GetAll() => Ok(await _service.GetAllAsync());
+    public async Task<IActionResult> GetAll()
+    {
+        if (User.IsInRole(RoleNames.Admin))
+            return Ok(await _service.GetAllAsync());
+
+        var employeeId = _accessScope.GetCurrentEmployeeId(User);
+        if (string.IsNullOrWhiteSpace(employeeId))
+            return Forbid();
+        if (User.IsInRole(RoleNames.Employee))
+            return Ok(await _service.GetByEmployeeAsync(employeeId));
+
+        var projectIds = await _accessScope.GetManagedProjectIdsAsync(User);
+        var grouped = await Task.WhenAll(projectIds.Select(_service.GetByProjectAsync));
+        return Ok(grouped.SelectMany(items => items));
+    }
 
     [HttpGet("employee/{employeeId}")]
-    public async Task<IActionResult> GetByEmployee(string employeeId) => Ok(await _service.GetByEmployeeAsync(employeeId));
+    public async Task<IActionResult> GetByEmployee(string employeeId)
+    {
+        if (!await _accessScope.CanViewEmployeeAsync(User, employeeId))
+            return Forbid();
+
+        var allocations = await _service.GetByEmployeeAsync(employeeId);
+        if (User.IsInRole(RoleNames.Manager))
+        {
+            var projectIds = await _accessScope.GetManagedProjectIdsAsync(User);
+            allocations = allocations.Where(a => projectIds.Contains(a.ProjectId)).ToList();
+        }
+        return Ok(allocations);
+    }
 
     [HttpGet("project/{projectId}")]
-    public async Task<IActionResult> GetByProject(string projectId) => Ok(await _service.GetByProjectAsync(projectId));
+    public async Task<IActionResult> GetByProject(string projectId)
+    {
+        if (!await _accessScope.CanViewProjectAsync(User, projectId))
+            return Forbid();
+        return Ok(await _service.GetByProjectAsync(projectId));
+    }
 
     [HttpGet("task/{projectId}/{taskId}")]
-    public async Task<IActionResult> GetByTask(string projectId, string taskId) => Ok(await _service.GetByTaskAsync(projectId, taskId));
+    public async Task<IActionResult> GetByTask(string projectId, string taskId)
+    {
+        if (!await _accessScope.CanViewTaskAsync(User, projectId, taskId))
+            return Forbid();
+        return Ok(await _service.GetByTaskAsync(projectId, taskId));
+    }
 
     [HttpGet("availability")]
+    [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
     public async Task<IActionResult> GetAvailability([FromQuery] AllocationAvailabilityRequest request)
     {
+        if (!string.IsNullOrWhiteSpace(request.ProjectId) && !await _accessScope.CanManageProjectAsync(User, request.ProjectId))
+            return Forbid();
+
         var endDate = request.EndDate ?? request.StartDate;
         if (request.StartDate == default)
             return BadRequest("StartDate is required.");
@@ -47,8 +89,12 @@ public class AllocationsController : ControllerBase
     }
 
     [HttpGet("underutilized")]
+    [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
     public async Task<IActionResult> GetUnderutilized([FromQuery] AllocationAvailabilityRequest request)
     {
+        if (!string.IsNullOrWhiteSpace(request.ProjectId) && !await _accessScope.CanManageProjectAsync(User, request.ProjectId))
+            return Forbid();
+
         var endDate = request.EndDate ?? request.StartDate;
         if (request.StartDate == default)
             return BadRequest("StartDate is required.");
@@ -113,8 +159,12 @@ public class AllocationsController : ControllerBase
     }
 
     [HttpPost("simulate")]
+    [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
     public async Task<IActionResult> Simulate(AllocationSimulationRequest request)
     {
+        if (!await _accessScope.CanManageProjectAsync(User, request.ProjectId))
+            return Forbid();
+
         var endDate = request.EndDate ?? request.StartDate;
         if (request.StartDate.Date > endDate.Date)
             return BadRequest("EndDate cannot be before StartDate.");
@@ -213,8 +263,12 @@ public class AllocationsController : ControllerBase
     }
 
     [HttpDelete("{employeeId}/{projectId}/{taskId}")]
+    [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
     public async Task<IActionResult> Delete(string employeeId, string projectId, string taskId)
     {
+        if (!await _accessScope.CanManageProjectAsync(User, projectId))
+            return Forbid();
+
         var allocation = await _context.Allocations.FindAsync(employeeId, projectId, taskId);
         if (allocation == null) return NotFound();
         _context.Allocations.Remove(allocation);
@@ -253,12 +307,6 @@ public class AllocationsController : ControllerBase
 
     private async Task<bool> CanManageProjectAsync(string projectId)
     {
-        if (User.IsInRole(RoleNames.Admin))
-            return true;
-
-        var employeeId = User.FindFirst("employee_id")?.Value;
-        return User.IsInRole(RoleNames.Manager) &&
-            !string.IsNullOrWhiteSpace(employeeId) &&
-            await _context.ProjectManagers.AnyAsync(pm => pm.EmployeeId == employeeId && pm.ProjectId == projectId);
+        return await _accessScope.CanManageProjectAsync(User, projectId);
     }
 }
