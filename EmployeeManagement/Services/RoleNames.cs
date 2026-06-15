@@ -37,7 +37,11 @@ public static class RoleNames
             "allocations.simulate",
             "availability.view",
             "leaves.manage",
-            "timesheets.view.all"
+            "timesheets.view.all",
+            "timesheets.approve",
+            "notifications.view",
+            "audit.view.all",
+            "tasks.status.manage"
         },
         Manager => new[]
         {
@@ -51,7 +55,11 @@ public static class RoleNames
             "employees.view.available",
             "employees.manage.managed",
             "leaves.view.team",
-            "timesheets.view.team"
+            "timesheets.view.team",
+            "timesheets.approve",
+            "notifications.view",
+            "audit.view.managed",
+            "tasks.status.manage.managed"
         },
         _ => new[]
         {

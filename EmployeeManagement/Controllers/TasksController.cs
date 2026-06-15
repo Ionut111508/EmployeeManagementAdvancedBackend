@@ -16,13 +16,15 @@ namespace EmployeeManagement.Controllers
         private readonly IUserRoleService _userRoleService;
         private readonly IAllocationService _allocationService;
         private readonly IAccessScopeService _accessScope;
+        private readonly IAuditLogService _audit;
 
-        public TasksController(AppDbContext context, IUserRoleService userRoleService, IAllocationService allocationService, IAccessScopeService accessScope)
+        public TasksController(AppDbContext context, IUserRoleService userRoleService, IAllocationService allocationService, IAccessScopeService accessScope, IAuditLogService audit)
         {
             _context = context;
             _userRoleService = userRoleService;
             _allocationService = allocationService;
             _accessScope = accessScope;
+            _audit = audit;
         }
 
         [HttpGet]
@@ -265,7 +267,8 @@ namespace EmployeeManagement.Controllers
                     DescriptionId = request.DescriptionId,
                     RequiredSkillId = string.IsNullOrWhiteSpace(request.RequiredSkillId) ? null : request.RequiredSkillId,
                     PlannedStartDate = request.PlannedStartDate.Date,
-                    PlannedEndDate = request.PlannedEndDate.Date
+                    PlannedEndDate = request.PlannedEndDate.Date,
+                    Status = TaskStatuses.Ready
                 };
 
                 _context.Descriptions.Add(description);
@@ -293,6 +296,7 @@ namespace EmployeeManagement.Controllers
                 }
 
                 await transaction.CommitAsync();
+                await _audit.RecordAsync(User, "Create", "Task", $"{task.ProjectId}/{task.TaskId}", $"Created task {task.TaskName} with {createdAllocations.Count} allocation(s).", task.ProjectId, after: new { task.TaskName, task.EstimatedHours, task.Status });
                 await _context.Entry(task).Reference(item => item.Project).LoadAsync();
                 await _context.Entry(task).Reference(item => item.Description).LoadAsync();
                 await _context.Entry(task).Reference(item => item.RequiredSkill).LoadAsync();
@@ -349,7 +353,8 @@ namespace EmployeeManagement.Controllers
                 DescriptionId = dto.DescriptionId,
                 RequiredSkillId = string.IsNullOrWhiteSpace(dto.RequiredSkillId) ? null : dto.RequiredSkillId,
                 PlannedStartDate = dto.PlannedStartDate?.Date,
-                PlannedEndDate = dto.PlannedEndDate?.Date
+                PlannedEndDate = dto.PlannedEndDate?.Date,
+                Status = TaskStatuses.Ready
             };
 
             _context.TaskItems.Add(task);
@@ -369,6 +374,7 @@ namespace EmployeeManagement.Controllers
             await _context.Entry(task).Reference(t => t.RequiredSkill).LoadAsync();
 
             var resultDto = ToDto(task);
+            await _audit.RecordAsync(User, "Create", "Task", $"{task.ProjectId}/{task.TaskId}", $"Created task {task.TaskName}.", task.ProjectId, after: resultDto);
 
             return CreatedAtAction(nameof(GetById), new { projectId = task.ProjectId, taskId = task.TaskId }, resultDto);
         }
@@ -396,6 +402,7 @@ namespace EmployeeManagement.Controllers
             if (!string.IsNullOrWhiteSpace(dto.RequiredSkillId) && !await _context.Skills.AnyAsync(s => s.SkillId == dto.RequiredSkillId))
                 return BadRequest("Required skill does not exist");
 
+            var before = ToDto(task);
             task.TaskName = dto.TaskName;
             task.EstimatedHours = dto.EstimatedHours;
             task.DescriptionId = dto.DescriptionId;
@@ -404,6 +411,7 @@ namespace EmployeeManagement.Controllers
             task.PlannedEndDate = dto.PlannedEndDate?.Date;
 
             await _context.SaveChangesAsync();
+            await _audit.RecordAsync(User, "Update", "Task", $"{projectId}/{taskId}", $"Updated task {task.TaskName}.", projectId, before, ToDto(task));
 
             return NoContent();
         }
@@ -420,8 +428,32 @@ namespace EmployeeManagement.Controllers
 
             _context.TaskItems.Remove(task);
             await _context.SaveChangesAsync();
+            await _audit.RecordAsync(User, "Delete", "Task", $"{projectId}/{taskId}", $"Deleted task {task.TaskName}.", projectId, before: ToDto(task));
 
             return NoContent();
+        }
+
+        [HttpPut("{projectId}/{taskId}/status")]
+        [Authorize(Roles = RoleNames.Admin + "," + RoleNames.Manager)]
+        public async Task<ActionResult<TaskItemDto>> UpdateStatus(string projectId, string taskId, TaskStatusUpdateRequest request)
+        {
+            var task = await _context.TaskItems
+                .Include(item => item.Project)
+                .Include(item => item.Description)
+                .Include(item => item.RequiredSkill)
+                .FirstOrDefaultAsync(item => item.ProjectId == projectId && item.TaskId == taskId);
+            if (task == null) return NotFound();
+            if (!await CanManageProjectAsync(projectId)) return Forbid();
+            if (!TaskStatuses.All.Contains(request.Status)) return BadRequest("Unknown task status.");
+            if (task.Status == request.Status) return Ok(ToDto(task));
+            if (!TaskStatuses.CanTransition(task.Status, request.Status))
+                return BadRequest($"Transition from {task.Status} to {request.Status} is not allowed.");
+
+            var previousStatus = task.Status;
+            task.Status = request.Status;
+            await _context.SaveChangesAsync();
+            await _audit.RecordAsync(User, "StatusChange", "Task", $"{projectId}/{taskId}", $"Changed task status from {previousStatus} to {task.Status}. {request.Comment}".Trim(), projectId, new { Status = previousStatus }, new { task.Status, request.Comment });
+            return Ok(ToDto(task));
         }
 
         private static TaskItemDto ToDto(TaskItem task) => new()
@@ -444,6 +476,7 @@ namespace EmployeeManagement.Controllers
             RequiredSkillId = task.RequiredSkillId,
             PlannedStartDate = task.PlannedStartDate,
             PlannedEndDate = task.PlannedEndDate,
+            Status = task.Status,
             RequiredSkill = task.RequiredSkill != null ? new SkillDto
             {
                 SkillId = task.RequiredSkill.SkillId,

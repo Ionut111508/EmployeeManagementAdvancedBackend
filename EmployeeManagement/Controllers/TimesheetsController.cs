@@ -13,11 +13,13 @@ public class TimesheetsController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly IAccessScopeService _accessScope;
+    private readonly IAuditLogService _audit;
 
-    public TimesheetsController(AppDbContext context, IAccessScopeService accessScope)
+    public TimesheetsController(AppDbContext context, IAccessScopeService accessScope, IAuditLogService audit)
     {
         _context = context;
         _accessScope = accessScope;
+        _audit = audit;
     }
 
     [HttpGet]
@@ -111,16 +113,58 @@ public class TimesheetsController : ControllerBase
                 TaskId = request.TaskId,
                 EmployeeId = request.EmployeeId,
                 WorkDate = workDate,
-                WorkedHours = request.WorkedHours
+                WorkedHours = request.WorkedHours,
+                Status = TimesheetStatuses.Pending,
+                SubmittedAt = DateTime.UtcNow
             };
             _context.Timesheets.Add(existing);
         }
         else
         {
             existing.WorkedHours += request.WorkedHours;
+            existing.Status = TimesheetStatuses.Pending;
+            existing.SubmittedAt = DateTime.UtcNow;
+            existing.ReviewedAt = null;
+            existing.ReviewedByEmployeeId = null;
+            existing.ReviewComment = null;
         }
 
         await _context.SaveChangesAsync();
-        return Ok(existing);
+        await _audit.RecordAsync(User, "Submit", "Timesheet", $"{request.ProjectId}/{request.TaskId}/{request.EmployeeId}/{workDate:yyyy-MM-dd}", $"Submitted {request.WorkedHours:0.##}h for approval.", request.ProjectId, after: new { existing.WorkedHours, existing.Status });
+        return Ok(ToResponse(existing));
     }
+
+    [HttpPut("{projectId}/{taskId}/{employeeId}/{workDate}/review")]
+    public async Task<IActionResult> Review(string projectId, string taskId, string employeeId, DateTime workDate, TimesheetReviewRequest request)
+    {
+        if (!User.IsInRole(RoleNames.Admin) && !User.IsInRole(RoleNames.Manager)) return Forbid();
+        if (!await _accessScope.CanManageProjectAsync(User, projectId)) return Forbid();
+        if (request.Status is not TimesheetStatuses.Approved and not TimesheetStatuses.Rejected)
+            return BadRequest("Status must be Approved or Rejected.");
+
+        var entry = await _context.Timesheets.FindAsync(projectId, taskId, employeeId, workDate.Date);
+        if (entry == null) return NotFound();
+        var before = new { entry.Status, entry.ReviewComment };
+        entry.Status = request.Status;
+        entry.ReviewComment = string.IsNullOrWhiteSpace(request.Comment) ? null : request.Comment.Trim();
+        entry.ReviewedAt = DateTime.UtcNow;
+        entry.ReviewedByEmployeeId = _accessScope.GetCurrentEmployeeId(User);
+        await _context.SaveChangesAsync();
+        await _audit.RecordAsync(User, request.Status, "Timesheet", $"{projectId}/{taskId}/{employeeId}/{workDate:yyyy-MM-dd}", $"Timesheet entry was {request.Status.ToLowerInvariant()}.", projectId, before, new { entry.Status, entry.ReviewComment });
+        return Ok(ToResponse(entry));
+    }
+
+    private static TimesheetResponse ToResponse(Timesheet item) => new()
+    {
+        ProjectId = item.ProjectId,
+        TaskId = item.TaskId,
+        EmployeeId = item.EmployeeId,
+        WorkDate = item.WorkDate,
+        WorkedHours = item.WorkedHours,
+        Status = item.Status,
+        SubmittedAt = item.SubmittedAt,
+        ReviewedAt = item.ReviewedAt,
+        ReviewedByEmployeeId = item.ReviewedByEmployeeId,
+        ReviewComment = item.ReviewComment
+    };
 }

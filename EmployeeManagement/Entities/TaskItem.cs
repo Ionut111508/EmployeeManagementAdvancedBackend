@@ -10,6 +10,7 @@ namespace EmployeeManagement.Entities
         public string? RequiredSkillId { get; set; }
         public DateTime? PlannedStartDate { get; set; }
         public DateTime? PlannedEndDate { get; set; }
+        public string Status { get; set; } = Services.TaskStatuses.Backlog;
 
         public Project? Project { get; set; }
         public TaskDescription? Description { get; set; }

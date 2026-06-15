@@ -211,6 +211,30 @@ public class AllocationServiceTests
     }
 
     [Fact]
+    public async Task BuildTaskPlanAsync_DoesNotReportRoundingGapWhenCapacityIsSufficient()
+    {
+        using var context = CreateContext();
+        context.WorkNorms.Add(new WorkNorm { WorkNormId = "N1", WorkNormName = "Full", WorkHours = 8m });
+        context.Accounts.Add(new Account { AccountId = "C1", Username = "available", Password = "pass" });
+        context.Employees.Add(new Employee { EmployeeId = "E1", FirstName = "Available", LastName = "Person", Email = "available@test.ro", PhoneNumber = "1", AccountId = "C1", WorkNormId = "N1" });
+        context.Projects.Add(new Project { ProjectId = "P1", ProjectName = "Project" });
+        await context.SaveChangesAsync();
+
+        var service = new AllocationService(context);
+        var result = await service.BuildTaskPlanAsync(new TaskPlanningPreviewRequest
+        {
+            ProjectId = "P1",
+            EstimatedHours = 40m,
+            PlannedStartDate = new DateTime(2026, 6, 15),
+            PlannedEndDate = new DateTime(2026, 6, 29)
+        });
+
+        Assert.True(result.CanFullyStaff);
+        Assert.InRange(result.RemainingUncoveredHours, 0m, 0.05m);
+        Assert.Equal(3.636m, Assert.Single(result.AutomaticPlan).HoursPerDay);
+    }
+
+    [Fact]
     public async Task BuildTaskPlanAsync_ExcludesEmployeeAtFullDailyNorm()
     {
         using var context = CreateContext();

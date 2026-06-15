@@ -10,6 +10,7 @@ namespace EmployeeManagement.DTOs
         public string? RequiredSkillId { get; set; }
         public DateTime? PlannedStartDate { get; set; }
         public DateTime? PlannedEndDate { get; set; }
+        public string Status { get; set; } = Services.TaskStatuses.Backlog;
         public ProjectDto? Project { get; set; }
         public TaskDescriptionDto? Description { get; set; }
         public SkillDto? RequiredSkill { get; set; }

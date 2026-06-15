@@ -229,7 +229,7 @@ public class AllocationService : IAllocationService
                 break;
 
             var requestedFromEmployee = Math.Min(remaining, candidate.MaxAssignableHours);
-            var hoursPerDay = Math.Floor(requestedFromEmployee / workingDays * 100m) / 100m;
+            var hoursPerDay = Math.Floor(requestedFromEmployee / workingDays * 1000m) / 1000m;
             if (hoursPerDay <= 0)
                 continue;
 

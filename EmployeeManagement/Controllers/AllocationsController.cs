@@ -14,12 +14,14 @@ public class AllocationsController : ControllerBase
     private readonly AppDbContext _context;
     private readonly IAllocationService _service;
     private readonly IAccessScopeService _accessScope;
+    private readonly IAuditLogService _audit;
 
-    public AllocationsController(AppDbContext context, IAllocationService service, IAccessScopeService accessScope)
+    public AllocationsController(AppDbContext context, IAllocationService service, IAccessScopeService accessScope, IAuditLogService audit)
     {
         _context = context;
         _service = service;
         _accessScope = accessScope;
+        _audit = audit;
     }
 
     [HttpGet]
@@ -186,7 +188,9 @@ public class AllocationsController : ControllerBase
             return BadRequest("Employee is on leave in this period. Select another employee or delay the task.");
 
         var result = await _service.CreateAllocationAsync(request);
-        return result.Success ? Ok(result.Allocation) : BadRequest(result.Error);
+        if (!result.Success) return BadRequest(result.Error);
+        await _audit.RecordAsync(User, "Create", "Allocation", $"{request.EmployeeId}/{request.ProjectId}/{request.TaskId}", $"Allocated {request.EmployeeId} at {request.AllocatedHours:0.##}h/day.", request.ProjectId, after: result.Allocation);
+        return Ok(result.Allocation);
     }
 
     [HttpPost("auto")]
@@ -250,6 +254,7 @@ public class AllocationsController : ControllerBase
             created.Add(result.Allocation);
         }
         await transaction.CommitAsync();
+        await _audit.RecordAsync(User, "AutoAllocate", "Allocation", $"{request.ProjectId}/{request.TaskId}", $"Automatically created {created.Count} allocation(s).", request.ProjectId, after: created);
 
         var allocatedNow = created.Sum(item => item.TotalAllocationHours);
         var finalRemaining = Math.Max(remainingHours - allocatedNow, 0);
@@ -273,6 +278,7 @@ public class AllocationsController : ControllerBase
         if (allocation == null) return NotFound();
         _context.Allocations.Remove(allocation);
         await _context.SaveChangesAsync();
+        await _audit.RecordAsync(User, "Delete", "Allocation", $"{employeeId}/{projectId}/{taskId}", $"Removed allocation for {employeeId}.", projectId, before: new { allocation.AllocationStartDate, allocation.AllocationEndDate, allocation.AllocatedHours });
         return NoContent();
     }
 

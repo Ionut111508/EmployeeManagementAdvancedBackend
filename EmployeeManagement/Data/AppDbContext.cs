@@ -24,6 +24,7 @@ namespace EmployeeManagement.Data
         public DbSet<ProjectManager> ProjectManagers { get; set; }
         public DbSet<TaskPeriod> TaskPeriods { get; set; }
         public DbSet<ProjectPeriod> ProjectPeriods { get; set; }
+        public DbSet<AuditLog> AuditLogs { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -110,6 +111,7 @@ namespace EmployeeManagement.Data
                 entity.Property(x => x.RequiredSkillId).HasMaxLength(50).IsUnicode(false);
                 entity.Property(x => x.PlannedStartDate).HasColumnType("date");
                 entity.Property(x => x.PlannedEndDate).HasColumnType("date");
+                entity.Property(x => x.Status).HasMaxLength(30).HasDefaultValue(Services.TaskStatuses.Backlog).IsRequired();
                 entity.HasOne(x => x.Project).WithMany(x => x.TaskItems).HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasOne(x => x.Description).WithMany().HasForeignKey(x => x.DescriptionId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(x => x.RequiredSkill).WithMany().HasForeignKey(x => x.RequiredSkillId).OnDelete(DeleteBehavior.Restrict);
@@ -145,6 +147,11 @@ namespace EmployeeManagement.Data
                 entity.HasKey(x => new { x.ProjectId, x.TaskId, x.EmployeeId, x.WorkDate });
                 entity.Property(x => x.WorkDate).HasColumnName("EntryDate").HasColumnType("date");
                 entity.Property(x => x.WorkedHours).HasColumnName("HoursWorked").HasColumnType("decimal(4,2)");
+                entity.Property(x => x.Status).HasMaxLength(20).HasDefaultValue(Services.TimesheetStatuses.Approved).IsRequired();
+                entity.Property(x => x.SubmittedAt).HasColumnType("datetime2");
+                entity.Property(x => x.ReviewedAt).HasColumnType("datetime2");
+                entity.Property(x => x.ReviewedByEmployeeId).HasMaxLength(50);
+                entity.Property(x => x.ReviewComment).HasMaxLength(500);
                 entity.HasOne(x => x.TaskItem).WithMany(x => x.Timesheets).HasForeignKey(x => new { x.ProjectId, x.TaskId }).OnDelete(DeleteBehavior.Cascade);
                 entity.HasOne(x => x.Employee).WithMany(x => x.Timesheets).HasForeignKey(x => x.EmployeeId).OnDelete(DeleteBehavior.Cascade);
             });
@@ -203,6 +210,20 @@ namespace EmployeeManagement.Data
                 entity.HasKey(x => new { x.ProjectId, x.PeriodId });
                 entity.HasOne(x => x.Project).WithMany(x => x.ProjectPeriods).HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasOne(x => x.Period).WithMany(x => x.ProjectPeriods).HasForeignKey(x => x.PeriodId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<AuditLog>(entity =>
+            {
+                entity.ToTable("AuditLog");
+                entity.HasKey(x => x.AuditLogId);
+                entity.Property(x => x.CreatedAt).HasColumnType("datetime2");
+                entity.Property(x => x.ActorEmployeeId).HasMaxLength(50);
+                entity.Property(x => x.ActorRole).HasMaxLength(30).IsRequired();
+                entity.Property(x => x.Action).HasMaxLength(50).IsRequired();
+                entity.Property(x => x.EntityType).HasMaxLength(50).IsRequired();
+                entity.Property(x => x.EntityId).HasMaxLength(200).IsRequired();
+                entity.Property(x => x.ProjectId).HasMaxLength(50);
+                entity.Property(x => x.Summary).HasMaxLength(500).IsRequired();
             });
         }
     }
