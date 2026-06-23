@@ -35,7 +35,7 @@ public class DashboardController : ControllerBase
         {
             var start = allocation.AllocationStartDate ?? DateTime.Today;
             var end = allocation.AllocationEndDate ?? start;
-            allocation.TotalAllocationHours = _allocationService.CalculateTotalAllocationHours(start, end, allocation.AllocatedHours);
+            allocation.TotalAllocationHours = await _allocationService.CalculateEffectiveAllocationHoursAsync(employeeId, start, end, allocation.AllocatedHours);
         }
 
         var today = DateTime.Today;
@@ -68,7 +68,9 @@ public class DashboardController : ControllerBase
         if (task == null) return NotFound();
 
         var allocations = await _context.Allocations.Where(x => x.ProjectId == projectId && x.TaskId == taskId).ToListAsync();
-        var allocatedHours = allocations.Sum(x => _allocationService.CalculateTotalAllocationHours(x.AllocationStartDate, x.AllocationEndDate ?? x.AllocationStartDate, x.AllocatedHours));
+        var allocatedHours = 0m;
+        foreach (var allocation in allocations)
+            allocatedHours += await _allocationService.CalculateEffectiveAllocationHoursAsync(allocation.EmployeeId, allocation.AllocationStartDate, allocation.AllocationEndDate ?? allocation.AllocationStartDate, allocation.AllocatedHours);
         var workedHours = await _context.Timesheets.Where(x => x.ProjectId == projectId && x.TaskId == taskId).SumAsync(x => x.WorkedHours);
         var estimated = task.EstimatedHours ?? 0;
 
@@ -98,7 +100,9 @@ public class DashboardController : ControllerBase
         var allocations = await _context.Allocations.Where(x => x.ProjectId == projectId).ToListAsync();
         var workedHours = await _context.Timesheets.Where(x => x.ProjectId == projectId).SumAsync(x => x.WorkedHours);
         var estimatedHours = tasks.Sum(x => x.EstimatedHours ?? 0);
-        var allocatedHours = allocations.Sum(x => _allocationService.CalculateTotalAllocationHours(x.AllocationStartDate, x.AllocationEndDate ?? x.AllocationStartDate, x.AllocatedHours));
+        var allocatedHours = 0m;
+        foreach (var allocation in allocations)
+            allocatedHours += await _allocationService.CalculateEffectiveAllocationHoursAsync(allocation.EmployeeId, allocation.AllocationStartDate, allocation.AllocationEndDate ?? allocation.AllocationStartDate, allocation.AllocatedHours);
 
         return Ok(new ProjectSummaryResponse
         {

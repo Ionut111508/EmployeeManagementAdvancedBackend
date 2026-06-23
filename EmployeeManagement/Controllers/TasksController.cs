@@ -144,10 +144,15 @@ namespace EmployeeManagement.Controllers
                 var taskStart = task.PlannedStartDate?.Date ?? startDate.Date;
                 var taskEnd = task.PlannedEndDate?.Date ?? end;
                 var estimated = task.EstimatedHours ?? 0;
-                var allocated = task.Allocations.Sum(a => _allocationService.CalculateTotalAllocationHours(
-                    a.AllocationStartDate,
-                    a.AllocationEndDate ?? a.AllocationStartDate,
-                    a.AllocatedHours));
+                var allocated = 0m;
+                foreach (var allocation in task.Allocations)
+                {
+                    allocated += await _allocationService.CalculateEffectiveAllocationHoursAsync(
+                        allocation.EmployeeId,
+                        allocation.AllocationStartDate,
+                        allocation.AllocationEndDate ?? allocation.AllocationStartDate,
+                        allocation.AllocatedHours);
+                }
                 var remaining = Math.Max(estimated - allocated, 0);
                 var candidates = remaining <= 0
                     ? new List<AllocationAvailabilityResponse>()
@@ -243,12 +248,16 @@ namespace EmployeeManagement.Controllers
                 ? preview.AutomaticPlan.Select(item => new ManualTaskAllocationRequest
                 {
                     EmployeeId = item.EmployeeId,
-                    HoursPerDay = item.HoursPerDay
+                    HoursPerDay = item.HoursPerDay,
+                    AllocationStartDate = item.AllocationStartDate,
+                    AllocationEndDate = item.AllocationEndDate
                 }).ToList()
                 : request.ManualAllocations;
 
             if (plannedAllocations.Any(item => string.IsNullOrWhiteSpace(item.EmployeeId) || item.HoursPerDay <= 0))
                 return BadRequest("Each manual allocation requires an employee and hours per day greater than zero.");
+            if (plannedAllocations.Any(item => item.HoursPerDay > 8 || item.HoursPerDay != Math.Truncate(item.HoursPerDay)))
+                return BadRequest("Allocation hours must be a whole number between 1 and 8.");
 
             await using var transaction = await _context.Database.BeginTransactionAsync();
             try
@@ -283,8 +292,8 @@ namespace EmployeeManagement.Controllers
                         EmployeeId = planned.EmployeeId,
                         ProjectId = request.ProjectId,
                         TaskId = request.TaskId,
-                        AllocationStartDate = request.PlannedStartDate.Date,
-                        AllocationEndDate = request.PlannedEndDate.Date,
+                        AllocationStartDate = (planned.AllocationStartDate ?? request.PlannedStartDate).Date,
+                        AllocationEndDate = (planned.AllocationEndDate ?? request.PlannedEndDate).Date,
                         AllocatedHours = planned.HoursPerDay
                     });
                     if (!allocationResult.Success || allocationResult.Allocation == null)
@@ -427,12 +436,41 @@ namespace EmployeeManagement.Controllers
                 return NotFound();
             if (!await CanManageProjectAsync(projectId))
                 return Forbid();
+            if (await _context.Timesheets.AnyAsync(item => item.ProjectId == projectId && item.TaskId == taskId))
+                return BadRequest("A task with submitted timesheets cannot be deleted. Move it to Cancelled to preserve work history.");
 
+            var before = ToDto(task);
+            var allocations = await _context.Allocations
+                .Where(item => item.ProjectId == projectId && item.TaskId == taskId)
+                .ToListAsync();
+            var releasedEmployees = allocations.Select(item => item.EmployeeId).Distinct().ToList();
+            var comments = await _context.TaskComments
+                .Where(item => item.ProjectId == projectId && item.TaskId == taskId)
+                .ToListAsync();
+            var periods = await _context.TaskPeriods
+                .Where(item => item.ProjectId == projectId && item.TaskId == taskId)
+                .ToListAsync();
+            var description = await _context.Descriptions.FirstOrDefaultAsync(item => item.DescriptionId == task.DescriptionId);
+
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+            _context.Allocations.RemoveRange(allocations);
+            _context.TaskComments.RemoveRange(comments);
+            _context.TaskPeriods.RemoveRange(periods);
             _context.TaskItems.Remove(task);
+            if (description != null)
+                _context.Descriptions.Remove(description);
             await _context.SaveChangesAsync();
-            await _audit.RecordAsync(User, "Delete", "Task", $"{projectId}/{taskId}", $"Deleted task {task.TaskName}.", projectId, before: ToDto(task));
+            await transaction.CommitAsync();
 
-            return NoContent();
+            await _audit.RecordAsync(User, "Delete", "Task", $"{projectId}/{taskId}", $"Deleted task {task.TaskName} and released {releasedEmployees.Count} employee(s).", projectId, before: new { Task = before, AllocationCount = allocations.Count, ReleasedEmployees = releasedEmployees });
+
+            return Ok(new
+            {
+                taskId,
+                taskName = task.TaskName,
+                deletedAllocations = allocations.Count,
+                releasedEmployees
+            });
         }
 
         [HttpPut("{projectId}/{taskId}/status")]

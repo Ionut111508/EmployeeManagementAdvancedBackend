@@ -41,7 +41,15 @@ public class NotificationsController : ControllerBase
             .ToListAsync();
         foreach (var task in tasks)
         {
-            var allocated = task.Allocations.Sum(item => _allocationService.CalculateTotalAllocationHours(item.AllocationStartDate, item.AllocationEndDate ?? item.AllocationStartDate, item.AllocatedHours));
+            var allocated = 0m;
+            foreach (var allocation in task.Allocations)
+            {
+                allocated += await _allocationService.CalculateEffectiveAllocationHoursAsync(
+                    allocation.EmployeeId,
+                    allocation.AllocationStartDate,
+                    allocation.AllocationEndDate ?? allocation.AllocationStartDate,
+                    allocation.AllocatedHours);
+            }
             var missing = Math.Max((task.EstimatedHours ?? 0) - allocated, 0);
             if (missing <= 0.05m) continue;
             notifications.Add(new NotificationResponse

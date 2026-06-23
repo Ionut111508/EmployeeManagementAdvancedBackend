@@ -31,6 +31,22 @@ public class AllocationService : IAllocationService
         return CountWorkingDays(start, end) * hoursPerDay;
     }
 
+    public async Task<decimal> CalculateEffectiveAllocationHoursAsync(string employeeId, DateTime start, DateTime end, decimal hoursPerDay)
+    {
+        var uncoveredLeavePeriods = await GetUncoveredLeavePeriodsAsync(employeeId, start, end);
+        var effectiveDays = 0;
+        for (var date = start.Date; date <= end.Date; date = date.AddDays(1))
+        {
+            if (date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+                continue;
+            if (uncoveredLeavePeriods.Any(period => date >= period.Start && date <= period.End))
+                continue;
+            effectiveDays++;
+        }
+
+        return effectiveDays * hoursPerDay;
+    }
+
     public bool DatesOverlap(DateTime start1, DateTime end1, DateTime start2, DateTime end2)
     {
         return start1.Date <= end2.Date && start2.Date <= end1.Date;
@@ -38,11 +54,13 @@ public class AllocationService : IAllocationService
 
     public async Task<decimal> GetEmployeeAllocatedHoursForDateAsync(string employeeId, DateTime date)
     {
-        return await _context.Allocations
+        var directlyAllocated = await _context.Allocations
             .Where(a => a.EmployeeId == employeeId &&
                         a.AllocationStartDate.Date <= date.Date &&
                         (a.AllocationEndDate ?? a.AllocationStartDate).Date >= date.Date)
             .SumAsync(a => a.AllocatedHours);
+
+        return directlyAllocated + await GetReplacementCoverageHoursForDateAsync(employeeId, date);
     }
 
     public async Task<List<AllocationResponse>> GetAllAsync() => await BuildAllocationQuery().ToListAsync();
@@ -209,7 +227,7 @@ public class AllocationService : IAllocationService
             CanTakeRequestedHours = item.CanTakeRequestedHours,
             Status = item.Status,
             MaxAssignableHours = item.MeetsSkillRequirement && !item.IsOnLeave
-                ? workingDays * item.MinimumDailyAvailableHours
+                ? workingDays * Math.Min(8m, Math.Floor(item.MinimumDailyAvailableHours))
                 : 0
         }).ToList();
 
@@ -228,20 +246,36 @@ public class AllocationService : IAllocationService
             if (remaining <= 0.01m || workingDays == 0)
                 break;
 
-            var requestedFromEmployee = Math.Min(remaining, candidate.MaxAssignableHours);
-            var hoursPerDay = Math.Floor(requestedFromEmployee / workingDays * 1000m) / 1000m;
-            if (hoursPerDay <= 0)
+            var maximumDailyHours = (int)Math.Min(8m, Math.Floor(candidate.MinimumDailyAvailableHours));
+            var bestHoursPerDay = 0;
+            var bestWorkingDays = 0;
+            var bestTotalHours = 0m;
+            for (var hoursPerDay = 1; hoursPerDay <= maximumDailyHours; hoursPerDay++)
+            {
+                var assignableDays = Math.Min(workingDays, (int)Math.Floor(remaining / hoursPerDay));
+                var totalHours = assignableDays * hoursPerDay;
+                if (totalHours > bestTotalHours)
+                {
+                    bestHoursPerDay = hoursPerDay;
+                    bestWorkingDays = assignableDays;
+                    bestTotalHours = totalHours;
+                }
+            }
+
+            if (bestHoursPerDay <= 0 || bestWorkingDays <= 0)
                 continue;
 
-            var totalHours = hoursPerDay * workingDays;
+            var allocationEndDate = GetEndDateForWorkingDays(startDate, bestWorkingDays);
             automaticPlan.Add(new PlannedAllocationResponse
             {
                 EmployeeId = candidate.EmployeeId,
                 EmployeeName = candidate.FullName,
-                HoursPerDay = hoursPerDay,
-                TotalHours = totalHours
+                HoursPerDay = bestHoursPerDay,
+                TotalHours = bestTotalHours,
+                AllocationStartDate = startDate,
+                AllocationEndDate = allocationEndDate
             });
-            remaining = Math.Max(remaining - totalHours, 0);
+            remaining = Math.Max(remaining - bestTotalHours, 0);
         }
 
         return new TaskPlanningPreviewResponse
@@ -365,8 +399,15 @@ public class AllocationService : IAllocationService
         var existingAllocations = await _context.Allocations
             .Where(a => a.ProjectId == request.ProjectId && a.TaskId == request.TaskId)
             .ToListAsync();
-        var currentTotal = existingAllocations.Sum(a =>
-            CalculateTotalAllocationHours(a.AllocationStartDate, a.AllocationEndDate ?? a.AllocationStartDate, a.AllocatedHours));
+        var currentTotal = 0m;
+        foreach (var existingAllocation in existingAllocations)
+        {
+            currentTotal += await CalculateEffectiveAllocationHoursAsync(
+                existingAllocation.EmployeeId,
+                existingAllocation.AllocationStartDate,
+                existingAllocation.AllocationEndDate ?? existingAllocation.AllocationStartDate,
+                existingAllocation.AllocatedHours);
+        }
         var estimatedHours = task.EstimatedHours ?? 0;
         if (estimatedHours > 0 && currentTotal + newTotalHours > estimatedHours)
             return (false, "Task hours exceeded.", null);
@@ -425,10 +466,91 @@ public class AllocationService : IAllocationService
             .Where(a => a.ProjectId == projectId && a.TaskId == taskId)
             .ToListAsync();
 
-        return allocations.Sum(a => CalculateTotalAllocationHours(
-            a.AllocationStartDate,
-            a.AllocationEndDate ?? a.AllocationStartDate,
-            a.AllocatedHours));
+        var total = 0m;
+        foreach (var allocation in allocations)
+        {
+            total += await CalculateEffectiveAllocationHoursAsync(
+                allocation.EmployeeId,
+                allocation.AllocationStartDate,
+                allocation.AllocationEndDate ?? allocation.AllocationStartDate,
+                allocation.AllocatedHours);
+        }
+        return total;
+    }
+
+    private static DateTime GetEndDateForWorkingDays(DateTime startDate, int workingDays)
+    {
+        var date = startDate.Date;
+        var counted = 0;
+        while (counted < workingDays)
+        {
+            if (date.DayOfWeek is not DayOfWeek.Saturday and not DayOfWeek.Sunday)
+                counted++;
+            if (counted < workingDays)
+                date = date.AddDays(1);
+        }
+        return date;
+    }
+
+    private async Task<List<(DateTime Start, DateTime End)>> GetUncoveredLeavePeriodsAsync(string employeeId, DateTime startDate, DateTime endDate)
+    {
+        var result = new List<(DateTime Start, DateTime End)>();
+        if (!_context.Database.IsRelational())
+            return result;
+        try
+        {
+            var connection = _context.Database.GetDbConnection();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"SELECT StartDate, EndDate FROM EmployeeLeave
+WHERE EmployeeId = @employeeId AND ReplacementEmployeeId IS NULL
+  AND StartDate <= @endDate AND EndDate >= @startDate";
+            AddParameter(command, "@employeeId", employeeId);
+            AddParameter(command, "@startDate", startDate.Date);
+            AddParameter(command, "@endDate", endDate.Date);
+            if (connection.State != System.Data.ConnectionState.Open) await connection.OpenAsync();
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                result.Add((reader.GetDateTime(0).Date, reader.GetDateTime(1).Date));
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 208)
+        {
+            return result;
+        }
+        return result;
+    }
+
+    private async Task<decimal> GetReplacementCoverageHoursForDateAsync(string employeeId, DateTime date)
+    {
+        if (!_context.Database.IsRelational())
+            return 0;
+        try
+        {
+            var connection = _context.Database.GetDbConnection();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"SELECT COALESCE(SUM(a.HoursPerDay), 0)
+FROM EmployeeLeave l
+JOIN Allocation a ON a.EmployeeId = l.EmployeeId
+WHERE l.ReplacementEmployeeId = @employeeId
+  AND l.StartDate <= @date AND l.EndDate >= @date
+  AND a.AllocationStartDate <= @date
+  AND COALESCE(a.AllocationEndDate, a.AllocationStartDate) >= @date";
+            AddParameter(command, "@employeeId", employeeId);
+            AddParameter(command, "@date", date.Date);
+            if (connection.State != System.Data.ConnectionState.Open) await connection.OpenAsync();
+            return Convert.ToDecimal(await command.ExecuteScalarAsync());
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 208)
+        {
+            return 0;
+        }
+    }
+
+    private static void AddParameter(System.Data.Common.DbCommand command, string name, object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
     }
 
     private async Task<bool> IsEmployeeOnLeaveAsync(string employeeId, DateTime startDate, DateTime endDate)

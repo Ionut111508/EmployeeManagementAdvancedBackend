@@ -21,6 +21,8 @@ public class PlannedAllocationResponse
     public string EmployeeName { get; set; } = null!;
     public decimal HoursPerDay { get; set; }
     public decimal TotalHours { get; set; }
+    public DateTime AllocationStartDate { get; set; }
+    public DateTime AllocationEndDate { get; set; }
 }
 
 public class TaskPlanningPreviewResponse
@@ -40,6 +42,8 @@ public class ManualTaskAllocationRequest
 {
     public string EmployeeId { get; set; } = null!;
     public decimal HoursPerDay { get; set; }
+    public DateTime? AllocationStartDate { get; set; }
+    public DateTime? AllocationEndDate { get; set; }
 }
 
 public class CreatePlannedTaskRequest

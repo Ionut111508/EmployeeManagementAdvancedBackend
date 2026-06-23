@@ -252,7 +252,7 @@ public class AllocationServiceTests
     }
 
     [Fact]
-    public async Task BuildTaskPlanAsync_DoesNotReportRoundingGapWhenCapacityIsSufficient()
+    public async Task BuildTaskPlanAsync_UsesWholeDailyHoursAndShortensTheInterval()
     {
         using var context = CreateContext();
         context.WorkNorms.Add(new WorkNorm { WorkNormId = "N1", WorkNormName = "Full", WorkHours = 8m });
@@ -272,7 +272,10 @@ public class AllocationServiceTests
 
         Assert.True(result.CanFullyStaff);
         Assert.InRange(result.RemainingUncoveredHours, 0m, 0.05m);
-        Assert.Equal(3.636m, Assert.Single(result.AutomaticPlan).HoursPerDay);
+        var allocation = Assert.Single(result.AutomaticPlan);
+        Assert.Equal(4m, allocation.HoursPerDay);
+        Assert.Equal(40m, allocation.TotalHours);
+        Assert.Equal(new DateTime(2026, 6, 26), allocation.AllocationEndDate);
     }
 
     [Fact]

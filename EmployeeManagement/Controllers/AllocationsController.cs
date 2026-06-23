@@ -188,6 +188,8 @@ public class AllocationsController : ControllerBase
             return BadRequest("EndDate cannot be before StartDate.");
         if (request.HoursPerDay <= 0)
             return BadRequest("HoursPerDay must be greater than zero.");
+        if (!IsWholeDailyAllocation(request.HoursPerDay))
+            return BadRequest("HoursPerDay must be a whole number between 1 and 8.");
 
         var result = await _service.SimulateAllocationAsync(request);
         return Ok(result);
@@ -202,6 +204,8 @@ public class AllocationsController : ControllerBase
         var endDate = request.AllocationEndDate ?? request.AllocationStartDate;
         if (request.AllocationStartDate.Date < DateTime.Today)
             return BadRequest("Allocation start date cannot be in the past.");
+        if (!IsWholeDailyAllocation(request.AllocatedHours))
+            return BadRequest("AllocatedHours must be a whole number between 1 and 8.");
         if (await IsEmployeeOnLeaveAsync(request.EmployeeId, request.AllocationStartDate, endDate))
             return BadRequest("Employee is on leave in this period. Select another employee or delay the task.");
 
@@ -221,6 +225,8 @@ public class AllocationsController : ControllerBase
         if (task == null) return BadRequest("Task does not exist.");
         if (!await CanManageProjectAsync(request.ProjectId))
             return Forbid();
+        if (!IsWholeDailyAllocation(request.HoursPerDay))
+            return BadRequest("HoursPerDay must be a whole number between 1 and 8.");
 
         var startDate = request.StartDate == default
             ? task.PlannedStartDate.HasValue && task.PlannedStartDate.Value.Date > DateTime.Today ? task.PlannedStartDate : DateTime.Today
@@ -234,10 +240,15 @@ public class AllocationsController : ControllerBase
         var existingAllocations = await _context.Allocations
             .Where(allocation => allocation.ProjectId == request.ProjectId && allocation.TaskId == request.TaskId)
             .ToListAsync();
-        var existingHours = existingAllocations.Sum(allocation => _service.CalculateTotalAllocationHours(
-            allocation.AllocationStartDate,
-            allocation.AllocationEndDate ?? allocation.AllocationStartDate,
-            allocation.AllocatedHours));
+        var existingHours = 0m;
+        foreach (var allocation in existingAllocations)
+        {
+            existingHours += await _service.CalculateEffectiveAllocationHoursAsync(
+                allocation.EmployeeId,
+                allocation.AllocationStartDate,
+                allocation.AllocationEndDate ?? allocation.AllocationStartDate,
+                allocation.AllocatedHours);
+        }
         var remainingHours = Math.Max((task.EstimatedHours ?? 0) - existingHours, 0);
         if (remainingHours <= 0.05m)
             return Ok(new AutoAllocationResponse { AllocatedHours = 0, RemainingHours = 0, Status = "Fully staffed" });
@@ -264,8 +275,8 @@ public class AllocationsController : ControllerBase
                 EmployeeId = planned.EmployeeId,
                 ProjectId = request.ProjectId,
                 TaskId = request.TaskId,
-                AllocationStartDate = startDate.Value.Date,
-                AllocationEndDate = endDate.Value.Date,
+                AllocationStartDate = planned.AllocationStartDate,
+                AllocationEndDate = planned.AllocationEndDate,
                 AllocatedHours = planned.HoursPerDay
             });
             if (!result.Success || result.Allocation == null)
@@ -332,6 +343,9 @@ public class AllocationsController : ControllerBase
             return false;
         }
     }
+
+    private static bool IsWholeDailyAllocation(decimal hours) =>
+        hours >= 1 && hours <= 8 && hours == Math.Truncate(hours);
 
     private async Task<bool> CanManageProjectAsync(string projectId)
     {

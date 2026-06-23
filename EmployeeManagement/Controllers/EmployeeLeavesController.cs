@@ -15,12 +15,14 @@ public class EmployeeLeavesController : ControllerBase
     private readonly AppDbContext _context;
     private readonly IAllocationService _allocationService;
     private readonly IAccessScopeService _accessScope;
+    private readonly IAuditLogService _audit;
 
-    public EmployeeLeavesController(AppDbContext context, IAllocationService allocationService, IAccessScopeService accessScope)
+    public EmployeeLeavesController(AppDbContext context, IAllocationService allocationService, IAccessScopeService accessScope, IAuditLogService audit)
     {
         _context = context;
         _allocationService = allocationService;
         _accessScope = accessScope;
+        _audit = audit;
     }
 
     [HttpGet]
@@ -77,6 +79,16 @@ ORDER BY l.StartDate";
         if (!await _context.Employees.AnyAsync(e => e.EmployeeId == dto.EmployeeId)) return BadRequest("Employee does not exist.");
         if (!string.IsNullOrWhiteSpace(dto.ReplacementEmployeeId) && !await _context.Employees.AnyAsync(e => e.EmployeeId == dto.ReplacementEmployeeId)) return BadRequest("Replacement employee does not exist.");
         if (dto.ReplacementEmployeeId == dto.EmployeeId) return BadRequest("Replacement cannot be the same employee.");
+        var allowedLeaveTypes = new[] { "Vacation", "Medical", "Personal" };
+        var leaveType = allowedLeaveTypes.FirstOrDefault(type => string.Equals(type, dto.LeaveType, StringComparison.OrdinalIgnoreCase));
+        if (leaveType == null) return BadRequest("Leave type must be Vacation, Medical or Personal.");
+
+        var impactedAllocations = await GetImpactedAllocationsAsync(dto.EmployeeId, dto.StartDate, dto.EndDate);
+        if (!string.IsNullOrWhiteSpace(dto.ReplacementEmployeeId))
+        {
+            var replacementError = await ValidateReplacementCoverageAsync(dto.ReplacementEmployeeId, dto.StartDate, dto.EndDate, impactedAllocations);
+            if (replacementError != null) return BadRequest(replacementError);
+        }
 
         var id = string.IsNullOrWhiteSpace(dto.EmployeeLeaveId) ? "LV" + Guid.NewGuid().ToString("N")[..12].ToUpperInvariant() : dto.EmployeeLeaveId;
         var connection = _context.Database.GetDbConnection();
@@ -96,7 +108,7 @@ END";
         Add(command, "@EmployeeId", dto.EmployeeId);
         Add(command, "@StartDate", dto.StartDate.Date);
         Add(command, "@EndDate", dto.EndDate.Date);
-        Add(command, "@LeaveType", string.IsNullOrWhiteSpace(dto.LeaveType) ? "Vacation" : dto.LeaveType);
+        Add(command, "@LeaveType", leaveType);
         Add(command, "@Reason", dto.Reason ?? (object)DBNull.Value);
         Add(command, "@ReplacementEmployeeId", string.IsNullOrWhiteSpace(dto.ReplacementEmployeeId) ? DBNull.Value : dto.ReplacementEmployeeId);
         if (connection.State != System.Data.ConnectionState.Open) await connection.OpenAsync();
@@ -109,7 +121,15 @@ END";
         {
             return BadRequest("EmployeeLeave table does not exist in the database.");
         }
-        return Ok(new { employeeLeaveId = id });
+        await _audit.RecordAsync(User, "Create", "EmployeeLeave", id,
+            $"Registered {leaveType.ToLowerInvariant()} leave for {dto.EmployeeId} from {dto.StartDate:yyyy-MM-dd} to {dto.EndDate:yyyy-MM-dd}.",
+            after: new { dto.EmployeeId, dto.StartDate, dto.EndDate, LeaveType = leaveType, dto.ReplacementEmployeeId, ImpactedAllocations = impactedAllocations.Count });
+        return Ok(new
+        {
+            employeeLeaveId = id,
+            impactedAllocations = impactedAllocations.Count,
+            coveredAllocations = string.IsNullOrWhiteSpace(dto.ReplacementEmployeeId) ? 0 : impactedAllocations.Count
+        });
     }
 
     [HttpGet("{leaveId}/impact")]
@@ -147,16 +167,7 @@ END";
         if (leave == null)
             return null;
 
-        var allocations = await _context.Allocations
-            .AsNoTracking()
-            .Include(a => a.Project)
-            .Include(a => a.TaskItem)
-                .ThenInclude(t => t!.RequiredSkill)
-            .Where(a => a.EmployeeId == leave.EmployeeId &&
-                a.AllocationStartDate.Date <= leave.EndDate.Date &&
-                (a.AllocationEndDate ?? a.AllocationStartDate).Date >= leave.StartDate.Date)
-            .OrderBy(a => a.AllocationStartDate)
-            .ToListAsync();
+        var allocations = await GetImpactedAllocationsAsync(leave.EmployeeId, leave.StartDate, leave.EndDate);
 
         var impacts = new List<EmployeeLeaveImpactDto>();
         foreach (var allocation in allocations)
@@ -181,8 +192,7 @@ END";
                 .Take(5)
                 .ToList();
 
-            var selectedReplacementIsValid = !string.IsNullOrWhiteSpace(leave.ReplacementEmployeeId) &&
-                candidates.Any(c => c.EmployeeId == leave.ReplacementEmployeeId);
+            var selectedReplacementIsValid = !string.IsNullOrWhiteSpace(leave.ReplacementEmployeeId);
 
             impacts.Add(new EmployeeLeaveImpactDto
             {
@@ -199,7 +209,7 @@ END";
                 RequiredSkillName = allocation.TaskItem?.RequiredSkill?.SkillName,
                 RequiredSkillLevel = allocation.TaskItem?.RequiredSkill?.SkillLevel,
                 Status = selectedReplacementIsValid
-                    ? "Replacement selected"
+                    ? "Covered by replacement"
                     : candidates.Any()
                         ? "Replacement available"
                         : "Delay risk",
@@ -214,11 +224,62 @@ END";
             HasDelayRisk = hasDelayRisk,
             Recommendation = impacts.Count == 0
                 ? "No active allocations overlap this leave."
+                : !string.IsNullOrWhiteSpace(leave.ReplacementEmployeeId)
+                    ? $"All impacted allocations are covered by {leave.ReplacementEmployeeName ?? leave.ReplacementEmployeeId}."
                 : hasDelayRisk
                     ? "At least one impacted task has no qualified available replacement. Replan the task or reduce scope."
                     : "Qualified replacements are available for all impacted allocations.",
             Impacts = impacts
         };
+    }
+
+    private async Task<List<Entities.Allocation>> GetImpactedAllocationsAsync(string employeeId, DateTime startDate, DateTime endDate)
+    {
+        return await _context.Allocations
+            .AsNoTracking()
+            .Include(allocation => allocation.Project)
+            .Include(allocation => allocation.TaskItem)
+                .ThenInclude(task => task!.RequiredSkill)
+            .Where(allocation => allocation.EmployeeId == employeeId &&
+                allocation.AllocationStartDate.Date <= endDate.Date &&
+                (allocation.AllocationEndDate ?? allocation.AllocationStartDate).Date >= startDate.Date)
+            .OrderBy(allocation => allocation.AllocationStartDate)
+            .ToListAsync();
+    }
+
+    private async Task<string?> ValidateReplacementCoverageAsync(string replacementEmployeeId, DateTime startDate, DateTime endDate, List<Entities.Allocation> impactedAllocations)
+    {
+        foreach (var allocation in impactedAllocations)
+        {
+            if (!await _allocationService.EmployeeMeetsSkillRequirementAsync(replacementEmployeeId, allocation.TaskItem?.RequiredSkillId))
+                return $"Selected replacement does not meet the skill requirement for task {allocation.TaskItem?.TaskName ?? allocation.TaskId}.";
+        }
+
+        for (var date = startDate.Date; date <= endDate.Date; date = date.AddDays(1))
+        {
+            if (date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+                continue;
+
+            var requiredHours = impactedAllocations
+                .Where(allocation => allocation.AllocationStartDate.Date <= date &&
+                    (allocation.AllocationEndDate ?? allocation.AllocationStartDate).Date >= date)
+                .Sum(allocation => allocation.AllocatedHours);
+            if (requiredHours <= 0)
+                continue;
+
+            var availability = await _allocationService.GetAvailabilityAsync(new AllocationAvailabilityRequest
+            {
+                EmployeeId = replacementEmployeeId,
+                StartDate = date,
+                EndDate = date,
+                RequiredHoursPerDay = requiredHours
+            });
+            var candidate = availability.SingleOrDefault();
+            if (candidate == null || !candidate.CanTakeRequestedHours)
+                return $"Selected replacement cannot cover {requiredHours:0.##}h on {date:yyyy-MM-dd} without exceeding their work norm or leave schedule.";
+        }
+
+        return null;
     }
 
     private async Task<EmployeeLeaveDto?> GetLeaveByIdAsync(string leaveId)
