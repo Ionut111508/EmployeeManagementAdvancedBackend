@@ -15,12 +15,14 @@ namespace EmployeeManagement.Controllers
         private readonly AppDbContext _context;
         private readonly IUserRoleService _userRoleService;
         private readonly IAccessScopeService _accessScope;
+        private readonly IAuditLogService _audit;
 
-        public ProjectsController(AppDbContext context, IUserRoleService userRoleService, IAccessScopeService accessScope)
+        public ProjectsController(AppDbContext context, IUserRoleService userRoleService, IAccessScopeService accessScope, IAuditLogService audit)
         {
             _context = context;
             _userRoleService = userRoleService;
             _accessScope = accessScope;
+            _audit = audit;
         }
 
         [HttpGet]
@@ -85,12 +87,21 @@ namespace EmployeeManagement.Controllers
         public async Task<ActionResult<ProjectDto>> Create(ProjectCreateDto dto)
         {
             if (string.IsNullOrWhiteSpace(dto.ProjectId) || string.IsNullOrWhiteSpace(dto.ProjectName))
-                return BadRequest("ProjectId and ProjectName are required");
+                return BadRequest("Project ID and project name are required.");
+
+            var projectId = dto.ProjectId.Trim();
+            var projectName = dto.ProjectName.Trim();
+
+            if (projectId.Length > 50)
+                return BadRequest("Project ID cannot exceed 50 characters.");
+
+            if (projectName.Length > 100)
+                return BadRequest("Project name cannot exceed 100 characters.");
 
             var project = new Project
             {
-                ProjectId = dto.ProjectId,
-                ProjectName = dto.ProjectName
+                ProjectId = projectId,
+                ProjectName = projectName
             };
 
             _context.Projects.Add(project);
@@ -100,12 +111,13 @@ namespace EmployeeManagement.Controllers
             }
             catch (DbUpdateException)
             {
-                if (await _context.Projects.AnyAsync(p => p.ProjectId == dto.ProjectId))
-                    return BadRequest("Project with this ID already exists");
+                if (await _context.Projects.AnyAsync(p => p.ProjectId == projectId))
+                    return BadRequest("A project with this ID already exists.");
                 throw;
             }
 
             var resultDto = new ProjectDto { ProjectId = project.ProjectId, ProjectName = project.ProjectName };
+            await _audit.RecordAsync(User, "Create", "Project", project.ProjectId, $"Created project {project.ProjectName}.", project.ProjectId, after: resultDto);
             return CreatedAtAction(nameof(GetById), new { id = project.ProjectId }, resultDto);
         }
 

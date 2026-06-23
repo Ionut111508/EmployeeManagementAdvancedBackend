@@ -31,6 +31,7 @@ public class AuditLogResponse
     public long AuditLogId { get; set; }
     public DateTime CreatedAt { get; set; }
     public string? ActorEmployeeId { get; set; }
+    public string? ActorName { get; set; }
     public string ActorRole { get; set; } = null!;
     public string Action { get; set; } = null!;
     public string EntityType { get; set; } = null!;

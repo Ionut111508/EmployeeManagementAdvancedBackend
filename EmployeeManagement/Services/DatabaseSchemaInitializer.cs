@@ -33,6 +33,22 @@ IF COL_LENGTH('Timesheet', 'ReviewedAt') IS NULL ALTER TABLE Timesheet ADD Revie
 IF COL_LENGTH('Timesheet', 'ReviewedByEmployeeId') IS NULL ALTER TABLE Timesheet ADD ReviewedByEmployeeId nvarchar(50) NULL;
 IF COL_LENGTH('Timesheet', 'ReviewComment') IS NULL ALTER TABLE Timesheet ADD ReviewComment nvarchar(500) NULL;
 
+IF OBJECT_ID('EmployeeLeave', 'U') IS NULL
+BEGIN
+    CREATE TABLE EmployeeLeave (
+        EmployeeLeaveId nvarchar(50) NOT NULL CONSTRAINT PK_EmployeeLeave PRIMARY KEY,
+        EmployeeId varchar(50) NOT NULL,
+        StartDate date NOT NULL,
+        EndDate date NOT NULL,
+        LeaveType nvarchar(50) NOT NULL CONSTRAINT DF_EmployeeLeave_LeaveType DEFAULT 'Vacation',
+        Reason nvarchar(250) NULL,
+        ReplacementEmployeeId varchar(50) NULL,
+        CONSTRAINT FK_EmployeeLeave_Employee FOREIGN KEY (EmployeeId) REFERENCES Employee(EmployeeId) ON DELETE CASCADE,
+        CONSTRAINT FK_EmployeeLeave_ReplacementEmployee FOREIGN KEY (ReplacementEmployeeId) REFERENCES Employee(EmployeeId)
+    );
+    CREATE INDEX IX_EmployeeLeave_Employee_Period ON EmployeeLeave(EmployeeId, StartDate, EndDate);
+END;
+
 IF OBJECT_ID('AuditLog', 'U') IS NULL
 BEGIN
     CREATE TABLE AuditLog (

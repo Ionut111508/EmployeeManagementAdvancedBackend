@@ -356,6 +356,7 @@ public class AllocationService : IAllocationService
         if (!await EmployeeMeetsSkillRequirementAsync(request.EmployeeId, task.RequiredSkillId))
             return (false, "Employee does not meet the task required skill level.", null);
         var endDate = request.AllocationEndDate ?? request.AllocationStartDate;
+        if (request.AllocationStartDate.Date < DateTime.Today) return (false, "Allocation start date cannot be in the past.", null);
         if (request.AllocationStartDate.Date > endDate.Date) return (false, "Invalid interval.", null);
         if (request.AllocatedHours <= 0) return (false, "Invalid hours.", null);
         var duplicate = await _context.Allocations.FindAsync(request.EmployeeId, request.ProjectId, request.TaskId);

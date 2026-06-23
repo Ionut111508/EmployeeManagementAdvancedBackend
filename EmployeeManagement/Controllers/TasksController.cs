@@ -337,6 +337,8 @@ namespace EmployeeManagement.Controllers
                 return Forbid();
             if (dto.PlannedStartDate.HasValue && dto.PlannedEndDate.HasValue && dto.PlannedStartDate.Value.Date > dto.PlannedEndDate.Value.Date)
                 return BadRequest("PlannedEndDate cannot be before PlannedStartDate.");
+            if (dto.PlannedStartDate.HasValue && dto.PlannedStartDate.Value.Date < DateTime.Today)
+                return BadRequest("PlannedStartDate cannot be in the past for a new task.");
 
             var descriptionExists = await _context.Descriptions.AnyAsync(d => d.DescriptionId == dto.DescriptionId);
             if (!descriptionExists)
@@ -498,6 +500,8 @@ namespace EmployeeManagement.Controllers
                 return "EstimatedHours must be greater than zero.";
             if (startDate == default || endDate == default)
                 return "PlannedStartDate and PlannedEndDate are required.";
+            if (startDate.Date < DateTime.Today)
+                return "PlannedStartDate cannot be in the past.";
             if (startDate.Date > endDate.Date)
                 return "PlannedEndDate cannot be before PlannedStartDate.";
             if (_allocationService.CountWorkingDays(startDate, endDate) == 0)

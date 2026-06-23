@@ -9,6 +9,17 @@ namespace EmployeeManagement.Tests;
 
 public class AllocationServiceTests
 {
+    private static DateTime NextMonday()
+    {
+        var date = DateTime.Today;
+        while (date.DayOfWeek != DayOfWeek.Monday)
+        {
+            date = date.AddDays(1);
+        }
+
+        return date;
+    }
+
     private static AppDbContext CreateContext()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
@@ -68,13 +79,14 @@ public class AllocationServiceTests
         await context.SaveChangesAsync();
 
         var service = new AllocationService(context);
+        var startDate = NextMonday();
         var result = await service.CreateAllocationAsync(new CreateAllocationRequest
         {
             EmployeeId = "E1",
             ProjectId = "P1",
             TaskId = "T1",
-            AllocationStartDate = new DateTime(2026, 5, 18),
-            AllocationEndDate = new DateTime(2026, 5, 22),
+            AllocationStartDate = startDate,
+            AllocationEndDate = startDate.AddDays(4),
             AllocatedHours = 4m
         });
 
@@ -95,7 +107,8 @@ public class AllocationServiceTests
         context.Descriptions.Add(new TaskDescription { DescriptionId = "D1", TaskDescriptionText = "Task description" });
         context.TaskItems.Add(new TaskItem { ProjectId = "P1", TaskId = "T1", TaskName = "Task", EstimatedHours = 100m, DescriptionId = "D1" });
         context.TaskItems.Add(new TaskItem { ProjectId = "P1", TaskId = "T2", TaskName = "Task 2", EstimatedHours = 100m, DescriptionId = "D1" });
-        context.Allocations.Add(new Allocation { EmployeeId = "E1", ProjectId = "P1", TaskId = "T1", AllocationStartDate = new DateTime(2026, 5, 18), AllocationEndDate = new DateTime(2026, 5, 22), AllocatedHours = 6m });
+        var startDate = NextMonday();
+        context.Allocations.Add(new Allocation { EmployeeId = "E1", ProjectId = "P1", TaskId = "T1", AllocationStartDate = startDate, AllocationEndDate = startDate.AddDays(4), AllocatedHours = 6m });
         await context.SaveChangesAsync();
 
         var service = new AllocationService(context);
@@ -104,13 +117,40 @@ public class AllocationServiceTests
             EmployeeId = "E1",
             ProjectId = "P1",
             TaskId = "T2",
-            AllocationStartDate = new DateTime(2026, 5, 18),
-            AllocationEndDate = new DateTime(2026, 5, 22),
+            AllocationStartDate = startDate,
+            AllocationEndDate = startDate.AddDays(4),
             AllocatedHours = 4m
         });
 
         Assert.False(result.Success);
         Assert.Equal("Work norm exceeded.", result.Error);
+    }
+
+    [Fact]
+    public async Task CreateAllocationAsync_RejectsPastStartDate()
+    {
+        using var context = CreateContext();
+        context.WorkNorms.Add(new WorkNorm { WorkNormId = "N1", WorkNormName = "Full", WorkHours = 8m });
+        context.Accounts.Add(new Account { AccountId = "C1", Username = "user", Password = "pass" });
+        context.Employees.Add(new Employee { EmployeeId = "E1", FirstName = "Ion", LastName = "Pop", Email = "ion@test.ro", PhoneNumber = "0700000000", AccountId = "C1", WorkNormId = "N1" });
+        context.Projects.Add(new Project { ProjectId = "P1", ProjectName = "Project" });
+        context.Descriptions.Add(new TaskDescription { DescriptionId = "D1", TaskDescriptionText = "Task description" });
+        context.TaskItems.Add(new TaskItem { ProjectId = "P1", TaskId = "T1", TaskName = "Task", EstimatedHours = 40m, DescriptionId = "D1" });
+        await context.SaveChangesAsync();
+
+        var service = new AllocationService(context);
+        var result = await service.CreateAllocationAsync(new CreateAllocationRequest
+        {
+            EmployeeId = "E1",
+            ProjectId = "P1",
+            TaskId = "T1",
+            AllocationStartDate = DateTime.Today.AddDays(-1),
+            AllocationEndDate = DateTime.Today,
+            AllocatedHours = 4m
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("Allocation start date cannot be in the past.", result.Error);
     }
 
     [Fact]
@@ -130,13 +170,14 @@ public class AllocationServiceTests
         await context.SaveChangesAsync();
 
         var service = new AllocationService(context);
+        var startDate = NextMonday();
         var result = await service.CreateAllocationAsync(new CreateAllocationRequest
         {
             EmployeeId = "E1",
             ProjectId = "P1",
             TaskId = "T1",
-            AllocationStartDate = new DateTime(2026, 5, 18),
-            AllocationEndDate = new DateTime(2026, 5, 22),
+            AllocationStartDate = startDate,
+            AllocationEndDate = startDate.AddDays(4),
             AllocatedHours = 4m
         });
 

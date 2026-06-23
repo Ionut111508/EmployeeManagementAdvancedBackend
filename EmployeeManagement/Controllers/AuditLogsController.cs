@@ -29,7 +29,18 @@ public class AuditLogsController : ControllerBase
         if (User.IsInRole(RoleNames.Manager))
         {
             var managed = await _accessScope.GetManagedProjectIdsAsync(User);
-            query = query.Where(item => item.ProjectId != null && managed.Contains(item.ProjectId));
+            var teamEmployeeIds = _context.Allocations
+                .AsNoTracking()
+                .Where(allocation => managed.Contains(allocation.ProjectId))
+                .Select(allocation => allocation.EmployeeId)
+                .Distinct();
+
+            query = query.Where(item =>
+                item.ProjectId != null &&
+                managed.Contains(item.ProjectId) &&
+                item.ActorRole == RoleNames.Employee &&
+                item.ActorEmployeeId != null &&
+                teamEmployeeIds.Contains(item.ActorEmployeeId));
         }
         if (!string.IsNullOrWhiteSpace(projectId))
         {
@@ -43,6 +54,10 @@ public class AuditLogsController : ControllerBase
             AuditLogId = item.AuditLogId,
             CreatedAt = item.CreatedAt,
             ActorEmployeeId = item.ActorEmployeeId,
+            ActorName = _context.Employees
+                .Where(employee => employee.EmployeeId == item.ActorEmployeeId)
+                .Select(employee => employee.FirstName + " " + employee.LastName)
+                .FirstOrDefault(),
             ActorRole = item.ActorRole,
             Action = item.Action,
             EntityType = item.EntityType,

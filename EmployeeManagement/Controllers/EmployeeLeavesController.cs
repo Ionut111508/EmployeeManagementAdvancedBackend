@@ -72,6 +72,7 @@ ORDER BY l.StartDate";
             (User.IsInRole(RoleNames.Manager) && await _accessScope.CanManageEmployeeAsync(User, dto.EmployeeId)) ||
             (User.IsInRole(RoleNames.Employee) && currentEmployeeId == dto.EmployeeId);
         if (!canCreate) return Forbid();
+        if (dto.StartDate.Date < DateTime.Today) return BadRequest("Leave start date cannot be in the past.");
         if (dto.StartDate.Date > dto.EndDate.Date) return BadRequest("End date cannot be before start date.");
         if (!await _context.Employees.AnyAsync(e => e.EmployeeId == dto.EmployeeId)) return BadRequest("Employee does not exist.");
         if (!string.IsNullOrWhiteSpace(dto.ReplacementEmployeeId) && !await _context.Employees.AnyAsync(e => e.EmployeeId == dto.ReplacementEmployeeId)) return BadRequest("Replacement employee does not exist.");

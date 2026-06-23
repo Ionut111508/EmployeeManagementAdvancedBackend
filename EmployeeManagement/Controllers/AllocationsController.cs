@@ -82,6 +82,8 @@ public class AllocationsController : ControllerBase
         var endDate = request.EndDate ?? request.StartDate;
         if (request.StartDate == default)
             return BadRequest("StartDate is required.");
+        if (request.StartDate.Date < DateTime.Today)
+            return BadRequest("StartDate cannot be in the past.");
         if (request.StartDate.Date > endDate.Date)
             return BadRequest("EndDate cannot be before StartDate.");
         if (request.RequiredHoursPerDay.HasValue && request.RequiredHoursPerDay.Value <= 0)
@@ -100,6 +102,8 @@ public class AllocationsController : ControllerBase
         var endDate = request.EndDate ?? request.StartDate;
         if (request.StartDate == default)
             return BadRequest("StartDate is required.");
+        if (request.StartDate.Date < DateTime.Today)
+            return BadRequest("StartDate cannot be in the past.");
         if (request.StartDate.Date > endDate.Date)
             return BadRequest("EndDate cannot be before StartDate.");
 
@@ -154,8 +158,18 @@ public class AllocationsController : ControllerBase
             CurrentEndDate = currentEnd,
             FutureStartDate = futureStart,
             FutureEndDate = futureEnd,
-            IdleEmployees = current.Where(item => !item.IsOnLeave && item.ExistingAllocatedHours == 0 && item.AvailableHours > 0).ToList(),
-            UnderutilizedEmployees = current.Where(item => !item.IsOnLeave && item.ExistingAllocatedHours > 0 && item.AvailableHours > 0).ToList(),
+            IdleEmployees = current
+                .Where(item => !item.IsOnLeave && item.ExistingAllocatedHours == 0 && item.MinimumDailyAvailableHours > 0)
+                .OrderByDescending(item => item.MinimumDailyAvailableHours)
+                .ThenByDescending(item => item.AvailableHours)
+                .ThenBy(item => item.FullName)
+                .ToList(),
+            UnderutilizedEmployees = current
+                .Where(item => !item.IsOnLeave && item.ExistingAllocatedHours > 0 && item.MinimumDailyAvailableHours > 0)
+                .OrderByDescending(item => item.MinimumDailyAvailableHours)
+                .ThenByDescending(item => item.AvailableHours)
+                .ThenBy(item => item.FullName)
+                .ToList(),
             BecomingAvailableEmployees = becomingAvailable
         });
     }
@@ -168,6 +182,8 @@ public class AllocationsController : ControllerBase
             return Forbid();
 
         var endDate = request.EndDate ?? request.StartDate;
+        if (request.StartDate.Date < DateTime.Today)
+            return BadRequest("StartDate cannot be in the past.");
         if (request.StartDate.Date > endDate.Date)
             return BadRequest("EndDate cannot be before StartDate.");
         if (request.HoursPerDay <= 0)
@@ -184,6 +200,8 @@ public class AllocationsController : ControllerBase
         if (!await CanManageProjectAsync(request.ProjectId))
             return Forbid();
         var endDate = request.AllocationEndDate ?? request.AllocationStartDate;
+        if (request.AllocationStartDate.Date < DateTime.Today)
+            return BadRequest("Allocation start date cannot be in the past.");
         if (await IsEmployeeOnLeaveAsync(request.EmployeeId, request.AllocationStartDate, endDate))
             return BadRequest("Employee is on leave in this period. Select another employee or delay the task.");
 
@@ -204,8 +222,12 @@ public class AllocationsController : ControllerBase
         if (!await CanManageProjectAsync(request.ProjectId))
             return Forbid();
 
-        var startDate = request.StartDate == default ? task.PlannedStartDate : request.StartDate;
+        var startDate = request.StartDate == default
+            ? task.PlannedStartDate.HasValue && task.PlannedStartDate.Value.Date > DateTime.Today ? task.PlannedStartDate : DateTime.Today
+            : request.StartDate;
         var endDate = request.EndDate ?? task.PlannedEndDate ?? startDate;
+        if (startDate.Value.Date < DateTime.Today)
+            return BadRequest("Allocation start date cannot be in the past.");
         if (!startDate.HasValue || !endDate.HasValue || startDate.Value.Date > endDate.Value.Date)
             return BadRequest("Invalid interval.");
 
