@@ -35,6 +35,7 @@ namespace EmployeeManagement.Controllers
                 .Include(t => t.Project)
                 .Include(t => t.Description)
                 .Include(t => t.RequiredSkill)
+                .Include(t => t.Timesheets)
                 .ToListAsync();
 
             var dtos = tasks.Select(ToDto).ToList();
@@ -56,7 +57,8 @@ namespace EmployeeManagement.Controllers
                 .AsNoTracking()
                 .Include(t => t.Project)
                 .Include(t => t.Description)
-                .Include(t => t.RequiredSkill);
+                .Include(t => t.RequiredSkill)
+                .Include(t => t.Timesheets);
 
             if (access.Role == RoleNames.Employee)
             {
@@ -89,6 +91,7 @@ namespace EmployeeManagement.Controllers
                 .Include(t => t.Project)
                 .Include(t => t.Description)
                 .Include(t => t.RequiredSkill)
+                .Include(t => t.Timesheets)
                 .FirstOrDefaultAsync(t => t.ProjectId == projectId && t.TaskId == taskId);
 
             if (task == null)
@@ -478,6 +481,7 @@ namespace EmployeeManagement.Controllers
                 .Include(item => item.Project)
                 .Include(item => item.Description)
                 .Include(item => item.RequiredSkill)
+                .Include(item => item.Timesheets)
                 .FirstOrDefaultAsync(item => item.ProjectId == projectId && item.TaskId == taskId);
             if (task == null) return NotFound();
             if (!await CanManageProjectAsync(projectId)) return Forbid();
@@ -493,34 +497,44 @@ namespace EmployeeManagement.Controllers
             return Ok(ToDto(task));
         }
 
-        private static TaskItemDto ToDto(TaskItem task) => new()
+        private static TaskItemDto ToDto(TaskItem task)
         {
-            ProjectId = task.ProjectId,
-            TaskId = task.TaskId,
-            TaskName = task.TaskName,
-            EstimatedHours = task.EstimatedHours,
-            DescriptionId = task.DescriptionId,
-            Project = task.Project != null ? new ProjectDto
+            var approvedWorkedHours = task.Timesheets
+                .Where(item => item.Status == TimesheetStatuses.Approved)
+                .Sum(item => item.WorkedHours);
+            var estimatedHours = task.EstimatedHours ?? 0;
+            return new TaskItemDto
             {
-                ProjectId = task.Project.ProjectId,
-                ProjectName = task.Project.ProjectName
-            } : null,
-            Description = task.Description != null ? new TaskDescriptionDto
-            {
-                DescriptionId = task.Description.DescriptionId,
-                TaskDescriptionText = task.Description.TaskDescriptionText
-            } : null,
-            RequiredSkillId = task.RequiredSkillId,
-            PlannedStartDate = task.PlannedStartDate,
-            PlannedEndDate = task.PlannedEndDate,
-            Status = task.Status,
-            RequiredSkill = task.RequiredSkill != null ? new SkillDto
-            {
-                SkillId = task.RequiredSkill.SkillId,
-                SkillName = task.RequiredSkill.SkillName,
-                SkillLevel = task.RequiredSkill.SkillLevel
-            } : null
-        };
+                ProjectId = task.ProjectId,
+                TaskId = task.TaskId,
+                TaskName = task.TaskName,
+                EstimatedHours = task.EstimatedHours,
+                DescriptionId = task.DescriptionId,
+                Project = task.Project != null ? new ProjectDto
+                {
+                    ProjectId = task.Project.ProjectId,
+                    ProjectName = task.Project.ProjectName
+                } : null,
+                Description = task.Description != null ? new TaskDescriptionDto
+                {
+                    DescriptionId = task.Description.DescriptionId,
+                    TaskDescriptionText = task.Description.TaskDescriptionText
+                } : null,
+                RequiredSkillId = task.RequiredSkillId,
+                PlannedStartDate = task.PlannedStartDate,
+                PlannedEndDate = task.PlannedEndDate,
+                Status = TaskStatuses.Resolve(task.Status, task.PlannedEndDate, task.EstimatedHours, approvedWorkedHours, DateTime.Today),
+                WorkflowStatus = task.Status,
+                ApprovedWorkedHours = approvedWorkedHours,
+                RemainingHours = Math.Max(estimatedHours - approvedWorkedHours, 0),
+                RequiredSkill = task.RequiredSkill != null ? new SkillDto
+                {
+                    SkillId = task.RequiredSkill.SkillId,
+                    SkillName = task.RequiredSkill.SkillName,
+                    SkillLevel = task.RequiredSkill.SkillLevel
+                } : null
+            };
+        }
 
         private async Task<bool> CanManageProjectAsync(string projectId)
         {

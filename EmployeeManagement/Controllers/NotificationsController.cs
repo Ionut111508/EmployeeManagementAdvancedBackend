@@ -37,10 +37,31 @@ public class NotificationsController : ControllerBase
         var tasks = await _context.TaskItems.AsNoTracking()
             .Include(task => task.Project)
             .Include(task => task.Allocations)
+            .Include(task => task.Timesheets)
             .Where(task => projectIds.Contains(task.ProjectId) && task.Status != TaskStatuses.Completed && task.Status != TaskStatuses.Cancelled)
             .ToListAsync();
         foreach (var task in tasks)
         {
+            var approvedWorkedHours = task.Timesheets
+                .Where(item => item.Status == TimesheetStatuses.Approved)
+                .Sum(item => item.WorkedHours);
+            if (TaskStatuses.Resolve(task.Status, task.PlannedEndDate, task.EstimatedHours, approvedWorkedHours, today) == TaskStatuses.Delayed)
+            {
+                var remainingWork = Math.Max((task.EstimatedHours ?? 0) - approvedWorkedHours, 0);
+                notifications.Add(new NotificationResponse
+                {
+                    NotificationId = $"delayed:{task.ProjectId}:{task.TaskId}",
+                    Type = "TaskDelayed",
+                    Severity = "Critical",
+                    Title = $"{task.TaskName} is delayed",
+                    Message = $"{remainingWork:0.##}h remain after the {task.PlannedEndDate:dd.MM.yyyy} deadline.",
+                    ProjectId = task.ProjectId,
+                    TaskId = task.TaskId,
+                    RelevantDate = task.PlannedEndDate
+                });
+                continue;
+            }
+
             var allocated = 0m;
             foreach (var allocation in task.Allocations)
             {

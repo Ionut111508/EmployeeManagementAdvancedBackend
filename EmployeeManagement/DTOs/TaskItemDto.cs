@@ -11,6 +11,9 @@ namespace EmployeeManagement.DTOs
         public DateTime? PlannedStartDate { get; set; }
         public DateTime? PlannedEndDate { get; set; }
         public string Status { get; set; } = Services.TaskStatuses.Backlog;
+        public string WorkflowStatus { get; set; } = Services.TaskStatuses.Backlog;
+        public decimal ApprovedWorkedHours { get; set; }
+        public decimal RemainingHours { get; set; }
         public ProjectDto? Project { get; set; }
         public TaskDescriptionDto? Description { get; set; }
         public SkillDto? RequiredSkill { get; set; }

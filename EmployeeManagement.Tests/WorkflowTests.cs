@@ -40,6 +40,34 @@ public class WorkflowTests
     }
 
     [Fact]
+    public void TaskStatus_BecomesDelayedAfterDeadlineWhenApprovedWorkIsIncomplete()
+    {
+        var status = TaskStatuses.Resolve(
+            TaskStatuses.InProgress,
+            DateTime.Today.AddDays(-1),
+            40,
+            24,
+            DateTime.Today);
+
+        Assert.Equal(TaskStatuses.Delayed, status);
+    }
+
+    [Theory]
+    [InlineData(TaskStatuses.Completed, 10, TaskStatuses.Completed)]
+    [InlineData(TaskStatuses.InProgress, 40, TaskStatuses.InProgress)]
+    public void TaskStatus_DoesNotBecomeDelayedWhenCompletedOrRequiredHoursAreMet(string workflowStatus, decimal approvedHours, string expected)
+    {
+        var status = TaskStatuses.Resolve(
+            workflowStatus,
+            DateTime.Today.AddDays(-1),
+            40,
+            approvedHours,
+            DateTime.Today);
+
+        Assert.Equal(expected, status);
+    }
+
+    [Fact]
     public async Task Timesheet_SubmissionIsPendingAndManagerCanApproveIt()
     {
         await using var context = CreateContext();
