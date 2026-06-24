@@ -1,7 +1,9 @@
 using EmployeeManagement.Data;
 using EmployeeManagement.DTOs;
 using EmployeeManagement.Entities;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace EmployeeManagement.Services;
 
@@ -501,6 +503,7 @@ public class AllocationService : IAllocationService
         {
             var connection = _context.Database.GetDbConnection();
             await using var command = connection.CreateCommand();
+            EnlistCurrentTransaction(command);
             command.CommandText = @"SELECT StartDate, EndDate FROM EmployeeLeave
 WHERE EmployeeId = @employeeId AND ReplacementEmployeeId IS NULL
   AND StartDate <= @endDate AND EndDate >= @startDate";
@@ -527,6 +530,7 @@ WHERE EmployeeId = @employeeId AND ReplacementEmployeeId IS NULL
         {
             var connection = _context.Database.GetDbConnection();
             await using var command = connection.CreateCommand();
+            EnlistCurrentTransaction(command);
             command.CommandText = @"SELECT COALESCE(SUM(a.HoursPerDay), 0)
 FROM EmployeeLeave l
 JOIN Allocation a ON a.EmployeeId = l.EmployeeId
@@ -553,12 +557,23 @@ WHERE l.ReplacementEmployeeId = @employeeId
         command.Parameters.Add(parameter);
     }
 
+    private void EnlistCurrentTransaction(System.Data.Common.DbCommand command)
+    {
+        var transaction = _context.Database.CurrentTransaction;
+        if (transaction != null)
+            command.Transaction = transaction.GetDbTransaction();
+    }
+
     private async Task<bool> IsEmployeeOnLeaveAsync(string employeeId, DateTime startDate, DateTime endDate)
     {
+        if (!_context.Database.IsRelational())
+            return false;
+
         try
         {
             var connection = _context.Database.GetDbConnection();
             await using var command = connection.CreateCommand();
+            EnlistCurrentTransaction(command);
             command.CommandText = "SELECT COUNT(1) FROM EmployeeLeave WHERE EmployeeId = @employeeId AND StartDate <= @endDate AND EndDate >= @startDate";
             var employeeParameter = command.CreateParameter();
             employeeParameter.ParameterName = "@employeeId";
@@ -579,7 +594,7 @@ WHERE l.ReplacementEmployeeId = @employeeId
             var value = await command.ExecuteScalarAsync();
             return Convert.ToInt32(value) > 0;
         }
-        catch
+        catch (SqlException ex) when (ex.Number == 208)
         {
             return false;
         }
