@@ -49,10 +49,8 @@ public class ManualTaskAllocationRequest
 public class CreatePlannedTaskRequest
 {
     public string ProjectId { get; set; } = null!;
-    public string TaskId { get; set; } = null!;
     public string TaskName { get; set; } = null!;
     public decimal EstimatedHours { get; set; }
-    public string DescriptionId { get; set; } = null!;
     public string DescriptionText { get; set; } = null!;
     public string? RequiredSkillId { get; set; }
     public DateTime PlannedStartDate { get; set; }

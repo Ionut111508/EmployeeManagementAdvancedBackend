@@ -216,9 +216,8 @@ namespace EmployeeManagement.Controllers
             var validationError = ValidatePlanningRequest(request.ProjectId, request.EstimatedHours, request.PlannedStartDate, request.PlannedEndDate);
             if (validationError != null)
                 return BadRequest(validationError);
-            if (string.IsNullOrWhiteSpace(request.TaskId) || string.IsNullOrWhiteSpace(request.TaskName) ||
-                string.IsNullOrWhiteSpace(request.DescriptionId) || string.IsNullOrWhiteSpace(request.DescriptionText))
-                return BadRequest("TaskId, TaskName, DescriptionId and DescriptionText are required.");
+            if (string.IsNullOrWhiteSpace(request.TaskName) || string.IsNullOrWhiteSpace(request.DescriptionText))
+                return BadRequest("TaskName and DescriptionText are required.");
             if (!string.Equals(request.AllocationMode, "Automatic", StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(request.AllocationMode, "Manual", StringComparison.OrdinalIgnoreCase))
                 return BadRequest("AllocationMode must be Automatic or Manual.");
@@ -228,10 +227,6 @@ namespace EmployeeManagement.Controllers
                 return Forbid();
             if (!string.IsNullOrWhiteSpace(request.RequiredSkillId) && !await _context.Skills.AnyAsync(skill => skill.SkillId == request.RequiredSkillId))
                 return BadRequest("Required skill does not exist.");
-            if (await _context.TaskItems.AnyAsync(task => task.ProjectId == request.ProjectId && task.TaskId == request.TaskId))
-                return BadRequest("Task with this ProjectId and TaskId combination already exists.");
-            if (await _context.Descriptions.AnyAsync(description => description.DescriptionId == request.DescriptionId))
-                return BadRequest("DescriptionId already exists.");
             if (request.ManualAllocations.GroupBy(item => item.EmployeeId).Any(group => group.Count() > 1))
                 return BadRequest("An employee can only be allocated once to the same task.");
 
@@ -262,18 +257,20 @@ namespace EmployeeManagement.Controllers
             await using var transaction = await _context.Database.BeginTransactionAsync();
             try
             {
+                var taskId = $"TSK_{Guid.NewGuid():N}";
+                var descriptionId = $"DESC_{Guid.NewGuid():N}";
                 var description = new TaskDescription
                 {
-                    DescriptionId = request.DescriptionId,
+                    DescriptionId = descriptionId,
                     TaskDescriptionText = request.DescriptionText
                 };
                 var task = new TaskItem
                 {
                     ProjectId = request.ProjectId,
-                    TaskId = request.TaskId,
+                    TaskId = taskId,
                     TaskName = request.TaskName,
                     EstimatedHours = request.EstimatedHours,
-                    DescriptionId = request.DescriptionId,
+                    DescriptionId = descriptionId,
                     RequiredSkillId = string.IsNullOrWhiteSpace(request.RequiredSkillId) ? null : request.RequiredSkillId,
                     PlannedStartDate = request.PlannedStartDate.Date,
                     PlannedEndDate = request.PlannedEndDate.Date,
@@ -291,7 +288,7 @@ namespace EmployeeManagement.Controllers
                     {
                         EmployeeId = planned.EmployeeId,
                         ProjectId = request.ProjectId,
-                        TaskId = request.TaskId,
+                        TaskId = task.TaskId,
                         AllocationStartDate = (planned.AllocationStartDate ?? request.PlannedStartDate).Date,
                         AllocationEndDate = (planned.AllocationEndDate ?? request.PlannedEndDate).Date,
                         AllocatedHours = planned.HoursPerDay
